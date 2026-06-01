@@ -1,0 +1,44 @@
+# Python 캐시
+__pycache__/
+*.pyc
+*.pyo
+
+# macOS
+.DS_Store
+
+# 가상환경
+ai/
+
+# 에디터
+.vscode/
+.cursor/
+.claude/
+
+# 로그
+logs/
+
+# finetuning — 소스 스크립트(.py/.sh)는 포함, 대용량 생성물만 제외
+finetuning/data/
+finetuning/logs/
+
+# logging 폴더 — 민감 JSON만 제외, 폴더는 .gitkeep으로 유지
+logging/*.json
+
+# DAQ 전체 제외
+DAQ/
+
+# DQM 빌드 / 컴파일 아티팩트
+DQM/output/
+DQM/build/
+DQM/lib/
+DQM/install/
+
+# 토이 데이터셋
+toydataset/
+
+# models — 에이전트 폴더 구조만 유지, 내용물 전체 제외
+models/*/**
+!models/*/.gitkeep
+
+# position scan 결과 — 사용 안 함
+position_scan_results/

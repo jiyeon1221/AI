@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>autoTB Control Panel</title>
+  <link rel="stylesheet" href="/static/style.css?v=20260524a" />
+</head>
+<body>
+<div id="app">
+
+  <!-- ── Top bar ──────────────────────────────────────────── -->
+  <div id="topbar">
+    <img src="/static/DREAM_LOGO.png" alt="DREAM" style="height:28px;margin-right:8px;vertical-align:middle;" />
+    <h1>autoTB</h1>
+
+    <!-- Agent selection buttons -->
+    <button class="agent-btn" id="btn-em"    onclick="startAgent('em_scan')">EM Scan</button>
+    <button class="agent-btn" id="btn-calib" onclick="startAgent('calib_scan')">Calibration</button>
+    <button class="agent-btn" id="btn-hv"    onclick="startAgent('hv_equalization')">HV Equalization</button>
+    <button class="agent-btn" id="btn-hv-sim" onclick="startAgent('hv_equalization_sim')">HV Sim</button>
+    <button class="agent-btn" id="stop-btn"  onclick="stopAgent()" style="display:none">Stop Agent</button>
+    <button class="agent-btn" id="kill-btn"  onclick="killRun()">KILL RUN</button>
+    <button class="agent-btn" id="hv-check-btn" title="전체 채널 HV 상태 확인">HV Check</button>
+    <button class="agent-btn" onclick="window.open('https://docs.google.com/spreadsheets/d/1V28RNHiscra5_y1kzlodzq1DiIw76fAdDkj-t9tzf1U/edit?gid=0#gid=0','_blank')">Log</button>
+    <button class="agent-btn" id="sound-btn" onclick="toggleSound()" title="DAQ 완료 알림음 켜기/끄기">🔔</button>
+
+    <div class="sep"></div>
+    <div id="status-pill">대기 중</div>
+  </div>
+
+  <!-- ── Two-panel body ───────────────────────────────────── -->
+  <div id="panels">
+
+    <!-- LEFT: AI Conversation -->
+    <div id="left-panel">
+      <div id="left-label">
+        <span>Chat</span>
+        <button class="clear-btn" onclick="clearChat()">Clear</button>
+      </div>
+      <div id="chat-scroll"></div>
+
+      <div id="input-area">
+        <!-- Free-text input -->
+        <div id="text-row">
+          <input id="chat-input" type="text" placeholder="메시지를 입력하세요..."
+                 onkeydown="if(event.key==='Enter') sendText()" />
+          <button id="mic-btn" onclick="toggleVoice()" title="음성 입력">🎤</button>
+          <button id="send-btn" onclick="sendText()">전송</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- RIGHT: Tool Output (top) + DQM Live (bottom) -->
+    <div id="right-panel">
+
+      <!-- Top half: existing tool output / DAT plots -->
+      <div id="right-top">
+        <div id="right-label">
+          <span>Tool Output / Plots</span>
+          <button class="clear-btn" onclick="clearToolOutput()">Clear</button>
+        </div>
+        <div id="right-scroll"></div>
+      </div>
+
+      <!-- Bottom half: DQM live dashboard -->
+      <div id="dqm-pane">
+        <div id="dqm-header">
+          <span id="dqm-title">DQM Live · 대기 중</span>
+          <div id="dqm-actions">
+            <button id="dqm-add-btn" title="다른 캔버스 추가">+ 캔버스</button>
+            <button id="dqm-freeform-btn" title="별도 창에서 자유롭게 보기">↗ 별도 창</button>
+          </div>
+        </div>
+        <div id="dqm-cells"></div>
+        <div id="motor-pos-bar">Motor: --</div>
+      </div>
+
+    </div>
+
+  </div><!-- /panels -->
+</div><!-- /app -->
+
+<!-- Ad-hoc result popup -->
+<div id="adhoc-overlay" onclick="closeAdhoc()">
+  <div id="adhoc-panel" onclick="event.stopPropagation()">
+    <div id="adhoc-header">
+      <span id="adhoc-title">Background 결과</span>
+      <button class="clear-btn" onclick="clearAdhoc()">Clear</button>
+      <span id="adhoc-close" onclick="closeAdhoc()">✕</span>
+    </div>
+    <div id="adhoc-scroll"></div>
+  </div>
+</div>
+
+<!-- Lightbox for full-size plots -->
+<div id="lightbox" onclick="closeLightbox()">
+  <span id="lightbox-close" onclick="closeLightbox()">✕</span>
+  <img id="lightbox-img" src="" alt="plot" />
+</div>
+
+<!-- DQM canvas zoom modal — click a cell to enlarge with full JSROOT interaction -->
+<div id="dqm-modal" onclick="closeDqmModal()">
+  <div id="dqm-modal-panel" onclick="event.stopPropagation()">
+    <div id="dqm-modal-header">
+      <span id="dqm-modal-title">캔버스</span>
+      <span id="dqm-modal-close" onclick="closeDqmModal()">✕</span>
+    </div>
+    <div id="dqm-modal-draw"></div>
+  </div>
+</div>
+
+<!-- DQM "add canvas" picker — popover listing all available canvases -->
+<div id="dqm-picker" onclick="closeDqmPicker()">
+  <div id="dqm-picker-panel" onclick="event.stopPropagation()">
+    <div id="dqm-picker-header">
+      <span>캔버스 추가</span>
+      <span id="dqm-picker-close" onclick="closeDqmPicker()">✕</span>
+    </div>
+    <div id="dqm-picker-list"></div>
+  </div>
+</div>
+
+<script src="/jsroot/jsroot.js"></script>
+<script src="/static/app.js?v=20260524c"></script>
+</body>
+</html>

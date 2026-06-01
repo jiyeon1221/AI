@@ -1,0 +1,690 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>autoTB · HV Check</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; font-family: 'Segoe UI', system-ui, sans-serif;
+               background: #0f1117; color: #dde1f0; }
+  body { display: flex; flex-direction: column; }
+
+  /* ── Top bar ── */
+  #top {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 14px; border-bottom: 1px solid #2c2f3e; background: #1a1d27;
+    flex-shrink: 0;
+  }
+  #top-left { display: flex; align-items: center; gap: 10px; }
+  #top-left img { height: 22px; }
+  #top-title { font-size: 14px; font-weight: 600; color: #4f8ef7; }
+  #top-right { display: flex; align-items: center; gap: 8px; }
+  #timestamp { font-size: 11px; color: #7a7f99; min-width: 170px; text-align: right; }
+
+  button {
+    background: #23273a; color: #dde1f0;
+    border: 1px solid #3a4159; border-radius: 4px;
+    padding: 5px 11px; font-size: 12px; cursor: pointer;
+  }
+  button:hover { border-color: #4f8ef7; color: #fff; }
+  button.active { background: #2a3a5e; border-color: #4f8ef7; color: #4f8ef7; }
+
+  /* ── Content area ── */
+  #content { flex: 1; overflow: auto; padding: 12px 14px; }
+
+  /* ── Error / loading ── */
+  #msg { font-size: 13px; color: #9ca0b8; padding: 20px 0; }
+  #msg.error { color: #f44336; }
+
+  /* ── Table view ── */
+  #tbl-wrap { overflow-x: auto; }
+  table {
+    width: 100%; border-collapse: collapse; font-size: 12px;
+    table-layout: fixed;
+  }
+  colgroup .col-ch     { width: 52px; }
+  colgroup .col-name   { width: 90px; }
+  colgroup .col-status { width: 70px; }
+  colgroup .col-exp    { width: 78px; }
+  colgroup .col-num    { width: 78px; }
+
+  thead th {
+    background: #1a1d27; color: #7a7f99; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.4px; font-size: 10px;
+    padding: 7px 10px; text-align: right; border-bottom: 1px solid #2c2f3e;
+    white-space: nowrap;
+  }
+  thead th:nth-child(1), thead th:nth-child(2) { text-align: left; }
+  thead th:nth-child(3) { text-align: center; }
+
+  tbody tr { border-bottom: 1px solid #1e2233; }
+  tbody tr:hover { background: #1e2233; }
+  tbody tr.trip-row { background: #2a0f14; }
+  tbody tr.trip-row:hover { background: #35131a; }
+  tbody td {
+    padding: 6px 10px; font-family: 'SF Mono','Fira Code',monospace;
+    font-size: 12px; text-align: right; white-space: nowrap;
+  }
+  tbody tr.trip-row td { color: #ff8a9a; }
+  tbody td:nth-child(1) { text-align: left; color: #7a7f99; }
+  tbody td:nth-child(2) { text-align: left; color: #dde1f0; font-weight: 600; }
+  tbody td:nth-child(3) { text-align: center; }
+
+  /* Status badge */
+  .badge {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 2px 8px; border-radius: 3px; font-size: 11px; font-weight: 600;
+  }
+  .badge-on   { background: #2c2c2c; color: #f2f2f2; }
+  .badge-off  { background: #2a2a2a; color: #ffffff; }
+  .badge-up   { background: #2c2c2c; color: #f1f1f1; }
+  .badge-down { background: #2c2c2c; color: #efefef; }
+  .badge-trip { background: #5a0000; color: #ff1744; }
+  .badge-unk  { background: #1f2235; color: #7a7f99; }
+  .dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
+  .dot-on   { background: #f2f2f2; }
+  .dot-off  { background: #ffffff; }
+  .dot-up   { background: #f1f1f1; }
+  .dot-down { background: #efefef; }
+  .dot-trip { background: #ff1744; }
+  .dot-unk  { background: #7a7f99; }
+
+  /* VMon deviation highlight */
+  .vmon-warn { color: #dde1f0; }
+  .vmon-ok   { color: #dde1f0; }
+
+  /* ── Raw view ── */
+  #raw {
+    font-family: 'SF Mono','Fira Code','Courier New',monospace;
+    font-size: 12px; line-height: 1.5; color: #c5cae9;
+    background: #0a0c14; border-radius: 4px;
+    padding: 12px; white-space: pre-wrap; word-break: break-word;
+  }
+  .hidden { display: none; }
+
+  /* ── Edit mode ── */
+  colgroup .col-sel { width: 32px; }
+  thead th.col-sel { text-align: center; }
+  tbody td.col-sel { text-align: center; padding: 4px; }
+  tbody td.col-sel input[type=checkbox] { cursor: pointer; accent-color: #4f8ef7; }
+  tbody td.v0set-cell { cursor: pointer; position: relative; }
+  tbody td.v0set-cell:hover { background: #252840; }
+  tbody td.v0set-cell input.inline-edit {
+    width: 72px; background: #1a1d27; color: #fff;
+    border: 1px solid #4f8ef7; border-radius: 3px;
+    padding: 1px 4px; font-size: 12px; font-family: inherit;
+    text-align: right;
+  }
+
+  /* ── Control panel ── */
+  #ctrl-panel {
+    display: none;
+    margin-top: 12px; padding: 12px 14px;
+    background: #1a1d27; border: 1px solid #2c2f3e; border-radius: 6px;
+  }
+  #ctrl-panel.visible { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  #ctrl-panel label { font-size: 12px; color: #9ca0b8; }
+  #ctrl-panel input#bulk-voltage {
+    width: 80px; background: #0f1117; color: #dde1f0;
+    border: 1px solid #3a4159; border-radius: 4px;
+    padding: 4px 8px; font-size: 12px;
+  }
+  #sel-count { font-size: 12px; color: #4f8ef7; min-width: 80px; }
+  #ctrl-panel button { padding: 5px 14px; font-size: 12px; }
+  #ctrl-panel button.btn-apply  { background: #1e3a6e; border-color: #4f8ef7; color: #4f8ef7; }
+  #ctrl-panel button.btn-apply:hover  { background: #2a4f9e; color: #fff; }
+  #ctrl-panel button.btn-on    { background: #1a3a1a; border-color: #4caf50; color: #4caf50; }
+  #ctrl-panel button.btn-on:hover    { background: #2a5a2a; color: #fff; }
+  #ctrl-panel button.btn-off   { background: #3a1a1a; border-color: #ef5350; color: #ef5350; }
+  #ctrl-panel button.btn-off:hover   { background: #5a2a2a; color: #fff; }
+  #ctrl-panel button.btn-clear { background: #23273a; border-color: #3a4159; color: #7a7f99; }
+
+  /* ── Confirm modal ── */
+  #modal-overlay {
+    display: none; position: fixed; inset: 0;
+    background: rgba(0,0,0,.6); z-index: 100;
+    align-items: center; justify-content: center;
+  }
+  #modal-overlay.visible { display: flex; }
+  #modal-box {
+    background: #1a1d27; border: 1px solid #4f8ef7; border-radius: 8px;
+    padding: 20px 24px; min-width: 320px; max-width: 480px;
+  }
+  #modal-title { font-size: 14px; font-weight: 600; color: #4f8ef7; margin-bottom: 10px; }
+  #modal-body  { font-size: 12px; color: #9ca0b8; line-height: 1.6; margin-bottom: 16px; white-space: pre-wrap; }
+  #modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
+  #modal-confirm { background: #1e3a6e; border-color: #4f8ef7; color: #4f8ef7; padding: 6px 18px; }
+  #modal-confirm:hover { background: #2a4f9e; color: #fff; }
+  #modal-cancel  { background: #23273a; border-color: #3a4159; color: #7a7f99; padding: 6px 18px; }
+
+  /* ── Toast ── */
+  #toast {
+    display: none; position: fixed; bottom: 20px; right: 20px; z-index: 200;
+    background: #23273a; border: 1px solid #3a4159; border-radius: 6px;
+    padding: 10px 16px; font-size: 12px; color: #dde1f0;
+    box-shadow: 0 4px 16px rgba(0,0,0,.4);
+  }
+  #toast.ok    { border-color: #4caf50; color: #4caf50; }
+  #toast.error { border-color: #ef5350; color: #ef5350; }
+</style>
+</head>
+<body>
+<div id="top">
+  <div id="top-left">
+    <img src="/static/DREAM_LOGO.png" alt="DREAM" />
+    <span id="top-title">HV Status · All Channels</span>
+  </div>
+  <div id="top-right">
+    <button id="edit-btn">편집 모드</button>
+    <button id="view-btn">Raw 보기</button>
+    <button id="expert-btn">전문가모드: 꺼짐</button>
+    <button id="refresh-btn">새로고침</button>
+    <button id="auto-btn" class="active">자동 갱신: 2초</button>
+    <div id="timestamp">대기 중</div>
+  </div>
+</div>
+
+<div id="content">
+  <div id="msg">로딩 중...</div>
+  <div id="tbl-wrap" style="display:none">
+    <table id="hv-table">
+      <colgroup>
+        <col class="col-sel hidden" /><col class="col-ch" /><col class="col-name" /><col class="col-status" />
+        <col class="col-num" /><col class="col-num" />
+        <col class="col-num" /><col class="col-num" />
+        <col class="col-exp" /><col class="col-exp" /><col class="col-exp" />
+      </colgroup>
+      <thead>
+        <tr>
+          <th class="col-sel hidden"><input type="checkbox" id="chk-all" title="전체 선택" /></th>
+          <th>Ch</th><th>Name</th><th>Status</th>
+          <th>VMon (V)</th><th>IMon (uA)</th>
+          <th>V0Set (V)</th><th>I0Set (uA)</th>
+          <th class="expert-col hidden">RUp (V/s)</th>
+          <th class="expert-col hidden">RDown (V/s)</th>
+          <th class="expert-col hidden">VMax (V)</th>
+        </tr>
+      </thead>
+      <tbody id="hv-tbody"></tbody>
+    </table>
+  </div>
+  <div id="ctrl-panel">
+    <span id="sel-count">0개 선택됨</span>
+    <label>전압(V) <input type="number" id="bulk-voltage" step="1" min="0" max="2000" placeholder="예: 1500" /></label>
+    <button class="btn-apply" id="btn-apply-v">전압 적용</button>
+    <button class="btn-on"    id="btn-on">On</button>
+    <button class="btn-off"   id="btn-off">Off</button>
+    <button class="btn-clear" id="btn-clear-sel">선택 해제</button>
+  </div>
+  <pre id="raw" style="display:none"></pre>
+
+  <!-- Edit control panel is above (inside tbl-wrap flow) -->
+
+  <!-- Hodoscope HV card -->
+  <div id="hodo-card" style="
+    margin-top: 14px; padding: 12px 14px;
+    background: #1a1d27; border: 1px solid #2c2f3e; border-radius: 6px;
+    font-size: 12px; max-width: 320px;
+  ">
+    <div style="font-weight:600; color:#4f8ef7; margin-bottom:8px; font-size:11px;
+                text-transform:uppercase; letter-spacing:0.5px;">
+      Hodoscope HV (set file)
+    </div>
+    <div id="hodo-val" style="color:#9ca0b8;">로딩 중...</div>
+  </div>
+</div>
+
+<!-- Confirm modal -->
+<div id="modal-overlay">
+  <div id="modal-box">
+    <div id="modal-title">HV 변경 확인</div>
+    <div id="modal-body"></div>
+    <div id="modal-actions">
+      <button id="modal-cancel">취소</button>
+      <button id="modal-confirm">적용</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div id="toast"></div>
+
+<script>
+const msgEl      = document.getElementById('msg');
+const tblWrap    = document.getElementById('tbl-wrap');
+const tbody      = document.getElementById('hv-tbody');
+const rawEl      = document.getElementById('raw');
+const tsEl       = document.getElementById('timestamp');
+const autoBtn    = document.getElementById('auto-btn');
+const expertBtn  = document.getElementById('expert-btn');
+const refreshBtn = document.getElementById('refresh-btn');
+const viewBtn    = document.getElementById('view-btn');
+const editBtn    = document.getElementById('edit-btn');
+const ctrlPanel  = document.getElementById('ctrl-panel');
+const selCount   = document.getElementById('sel-count');
+const chkAll     = document.getElementById('chk-all');
+const bulkVolt   = document.getElementById('bulk-voltage');
+const btnApplyV  = document.getElementById('btn-apply-v');
+const btnOn      = document.getElementById('btn-on');
+const btnOff     = document.getElementById('btn-off');
+const btnClear   = document.getElementById('btn-clear-sel');
+const modalOverlay = document.getElementById('modal-overlay');
+const modalBody    = document.getElementById('modal-body');
+const modalConfirm = document.getElementById('modal-confirm');
+const modalCancel  = document.getElementById('modal-cancel');
+const toastEl      = document.getElementById('toast');
+
+let timerAuto = null;
+const AUTO_CHOICES = [1000, 2000, 5000]; // 1s / 2s / 5s
+let autoIdx = 1; // default: 2000ms
+let autoMs = AUTO_CHOICES[autoIdx];
+let showRaw = false;
+let lastRaw = '';
+let lastRows = null;
+let expertMode = false;
+let editMode = false;
+let pendingAction = null; // { command, channels, voltage? }
+
+/* ── Toast helper ── */
+let toastTimer = null;
+function showToast(msg, type = 'ok') {
+  toastEl.textContent = msg;
+  toastEl.className = type;
+  toastEl.style.display = 'block';
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { toastEl.style.display = 'none'; }, 3500);
+}
+
+/* ── Modal helper ── */
+function showConfirm(message, onConfirm) {
+  modalBody.textContent = message;
+  modalOverlay.classList.add('visible');
+  pendingAction = onConfirm;
+}
+modalConfirm.addEventListener('click', () => {
+  modalOverlay.classList.remove('visible');
+  if (pendingAction) { pendingAction(); pendingAction = null; }
+});
+modalCancel.addEventListener('click', () => {
+  modalOverlay.classList.remove('visible');
+  pendingAction = null;
+});
+
+/* ── HV API call ── */
+async function applyHV(command, channels, voltage) {
+  try {
+    const body = { command, channels };
+    if (command === 'voltage') body.voltage = voltage;
+    const res = await fetch('/api/hv/set', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok || data.ok === false) throw new Error(data.error || `HTTP ${res.status}`);
+    showToast(`✓ 완료: ${command} ${Array.isArray(channels) ? channels.join(',') : channels}`, 'ok');
+    setTimeout(loadStatus, 1500);
+  } catch (e) {
+    showToast(`✗ 오류: ${e.message}`, 'error');
+  }
+}
+
+/* ── Edit mode ── */
+function getCheckedNames() {
+  return Array.from(tbody.querySelectorAll('td.col-sel input[type=checkbox]:checked'))
+    .map(c => c.dataset.name)
+    .filter(Boolean);
+}
+function updateSelCount() {
+  const n = getCheckedNames().length;
+  selCount.textContent = `${n}개 선택됨`;
+  if (n > 0) ctrlPanel.classList.add('visible');
+  else ctrlPanel.classList.remove('visible');
+}
+chkAll.addEventListener('change', () => {
+  tbody.querySelectorAll('td.col-sel input[type=checkbox]')
+    .forEach(c => { c.checked = chkAll.checked; });
+  updateSelCount();
+});
+btnClear.addEventListener('click', () => {
+  tbody.querySelectorAll('td.col-sel input[type=checkbox]').forEach(c => { c.checked = false; });
+  chkAll.checked = false;
+  updateSelCount();
+});
+btnApplyV.addEventListener('click', () => {
+  const names = getCheckedNames();
+  if (!names.length) { showToast('채널을 선택해주세요', 'error'); return; }
+  const v = parseFloat(bulkVolt.value);
+  if (isNaN(v)) { showToast('전압을 입력해주세요', 'error'); return; }
+  showConfirm(
+    `${names.length}개 채널 (${names.slice(0,5).join(', ')}${names.length > 5 ? '...' : ''}) 전압을 ${v}V로 변경하시겠습니까?`,
+    () => applyHV('voltage', names, v)
+  );
+});
+btnOn.addEventListener('click', () => {
+  const names = getCheckedNames();
+  if (!names.length) { showToast('채널을 선택해주세요', 'error'); return; }
+  showConfirm(
+    `${names.length}개 채널을 켜시겠습니까?\n(${names.slice(0,5).join(', ')}${names.length > 5 ? '...' : ''})`,
+    () => applyHV('on', names)
+  );
+});
+btnOff.addEventListener('click', () => {
+  const names = getCheckedNames();
+  if (!names.length) { showToast('채널을 선택해주세요', 'error'); return; }
+  showConfirm(
+    `${names.length}개 채널을 끄시겠습니까?\n(${names.slice(0,5).join(', ')}${names.length > 5 ? '...' : ''})`,
+    () => applyHV('off', names)
+  );
+});
+editBtn.addEventListener('click', () => {
+  editMode = !editMode;
+  editBtn.textContent = editMode ? '편집 종료' : '편집 모드';
+  editBtn.classList.toggle('active', editMode);
+  document.querySelectorAll('.col-sel').forEach(el => el.classList.toggle('hidden', !editMode));
+  if (!editMode) {
+    chkAll.checked = false;
+    ctrlPanel.classList.remove('visible');
+  }
+  if (lastRows) renderTable(lastRows);
+});
+
+/* ── View toggle ── */
+viewBtn.addEventListener('click', () => {
+  showRaw = !showRaw;
+  viewBtn.textContent = showRaw ? '표 보기' : 'Raw 보기';
+  render();
+});
+
+function render() {
+  if (!lastRaw) return;
+  if (showRaw || !lastRows) {
+    tblWrap.style.display = 'none';
+    rawEl.style.display   = 'block';
+    rawEl.textContent     = lastRaw;
+    msgEl.style.display   = 'none';
+  } else {
+    rawEl.style.display   = 'none';
+    tblWrap.style.display = 'block';
+    msgEl.style.display   = 'none';
+    renderTable(lastRows);
+  }
+}
+
+/* ── Table rendering ── */
+function renderTable(rows) {
+  tbody.innerHTML = '';
+  rows.forEach(r => {
+    const tr = document.createElement('tr');
+    const st = (r.status || '').toLowerCase();
+    if (st === 'trip') tr.classList.add('trip-row');
+
+    // Checkbox (edit mode)
+    const tdSel = document.createElement('td');
+    tdSel.className = 'col-sel' + (editMode ? '' : ' hidden');
+    const chk = document.createElement('input');
+    chk.type = 'checkbox';
+    chk.dataset.name = r.name || r.ch_label;
+    chk.addEventListener('change', updateSelCount);
+    tdSel.appendChild(chk);
+    tr.appendChild(tdSel);
+
+    // Ch
+    const tdCh = document.createElement('td');
+    tdCh.textContent = r.ch_label || '-';
+    tr.appendChild(tdCh);
+
+    // Name
+    const tdName = document.createElement('td');
+    tdName.textContent = r.name || '-';
+    tr.appendChild(tdName);
+
+    // Status
+    const tdSt = document.createElement('td');
+    if (st === 'on') {
+      tdSt.innerHTML = '<span class="badge badge-on"><span class="dot dot-on"></span>On</span>';
+    } else if (st === 'off') {
+      tdSt.innerHTML = '<span class="badge badge-off"><span class="dot dot-off"></span>Off</span>';
+    } else if (st === 'up') {
+      tdSt.innerHTML = '<span class="badge badge-up"><span class="dot dot-up"></span>Up</span>';
+    } else if (st === 'down') {
+      tdSt.innerHTML = '<span class="badge badge-down"><span class="dot dot-down"></span>Down</span>';
+    } else if (st === 'trip') {
+      tdSt.innerHTML = '<span class="badge badge-trip"><span class="dot dot-trip"></span>Trip</span>';
+    } else {
+      tdSt.innerHTML = `<span class="badge badge-unk"><span class="dot dot-unk"></span>${r.status || '-'}</span>`;
+    }
+    tr.appendChild(tdSt);
+
+    // VMon vs V0Set
+    const vmon  = parseFloat(r.vmon);
+    const v0set = parseFloat(r.v0set);
+    const tdVMon = document.createElement('td');
+    if (!isNaN(vmon) && !isNaN(v0set)) {
+      const diff = Math.abs(vmon - v0set);
+      tdVMon.textContent = vmon.toFixed(2);
+      tdVMon.className = diff > 5 ? 'vmon-warn' : 'vmon-ok';
+      if (diff > 5) tdVMon.title = `V0Set: ${v0set} · 차이: ${diff.toFixed(1)} V`;
+    } else {
+      tdVMon.textContent = r.vmon || '-';
+    }
+    tr.appendChild(tdVMon);
+
+    // IMon
+    const tdIMon = document.createElement('td');
+    const imon = parseFloat(r.imon);
+    tdIMon.textContent = !isNaN(imon) ? imon.toFixed(3) : (r.imon || '-');
+    tr.appendChild(tdIMon);
+
+    // V0Set (클릭 시 인라인 편집 — 편집 모드에서만)
+    const tdV0Set = document.createElement('td');
+    tdV0Set.className = editMode ? 'v0set-cell' : '';
+    tdV0Set.textContent = r.v0set || '-';
+    if (editMode) {
+      tdV0Set.title = '클릭하여 전압 편집';
+      tdV0Set.addEventListener('click', () => {
+        if (tdV0Set.querySelector('input')) return;
+        const cur = tdV0Set.textContent.trim();
+        tdV0Set.textContent = '';
+        const inp = document.createElement('input');
+        inp.className = 'inline-edit';
+        inp.type = 'number'; inp.step = '1'; inp.min = '0'; inp.max = '2000';
+        inp.value = cur !== '-' ? cur : '';
+        tdV0Set.appendChild(inp);
+        inp.focus(); inp.select();
+        const commit = () => {
+          const v = parseFloat(inp.value);
+          if (!isNaN(v)) {
+            const chName = r.name && r.name !== '-' ? r.name : r.ch_label;
+            showConfirm(
+              `채널 ${chName} 전압을 ${v}V로 변경하시겠습니까?`,
+              () => applyHV('voltage', [chName], v)
+            );
+          }
+          tdV0Set.textContent = inp.value !== '' ? inp.value : cur;
+          tdV0Set.className = 'v0set-cell';
+        };
+        inp.addEventListener('blur', commit);
+        inp.addEventListener('keydown', e => {
+          if (e.key === 'Enter') { inp.blur(); }
+          if (e.key === 'Escape') { tdV0Set.textContent = cur; tdV0Set.className = 'v0set-cell'; }
+        });
+      });
+    }
+    tr.appendChild(tdV0Set);
+
+    // I0Set
+    const tdI0Set = document.createElement('td');
+    tdI0Set.textContent = r.i0set || '-';
+    tr.appendChild(tdI0Set);
+
+    // Expert columns
+    const tdRUp = document.createElement('td');
+    tdRUp.className = 'expert-col' + (expertMode ? '' : ' hidden');
+    tdRUp.textContent = r.rup || '-';
+    tr.appendChild(tdRUp);
+
+    const tdRDown = document.createElement('td');
+    tdRDown.className = 'expert-col' + (expertMode ? '' : ' hidden');
+    tdRDown.textContent = r.rdown || '-';
+    tr.appendChild(tdRDown);
+
+    const tdVMax = document.createElement('td');
+    tdVMax.className = 'expert-col' + (expertMode ? '' : ' hidden');
+    tdVMax.textContent = r.vmax || '-';
+    tr.appendChild(tdVMax);
+
+    tbody.appendChild(tr);
+  });
+}
+
+/* ── Parser ──
+   HVWrappdemo --Status --VMon --IMon --V0Set --I0Set 출력에서
+   "📄 Output:" 이후 섹션을 파싱.
+
+   헤더 행(ch/name/status/vmon 중 2개 이상 포함)을 찾고,
+   이후 숫자로 시작하는 행들을 채널 데이터로 파싱.
+   파싱 실패 시 null 반환 → Raw 텍스트 폴백.
+*/
+function parseHvOutput(raw) {
+  const outMarker = '📄 Output:';
+  const markerIdx = raw.indexOf(outMarker);
+  const section = markerIdx >= 0 ? raw.slice(markerIdx + outMarker.length) : raw;
+
+  const lines = section
+    .split('\n')
+    .map(l => l.trim())
+    .filter(l => l)
+    .filter(l => !/^(📊|📋|💻|⏰|⚠️|❌)/.test(l))
+    .filter(l => !/^command\s*:/i.test(l));
+
+  if (!lines.length) return null;
+
+  const rows = [];
+
+  // Header-only match — Status까지만 필수, 나머지 필드는 개별 pick으로 처리
+  // (Trip 상태에서 VMon 등이 비정상 포맷으로 나와도 행이 사라지지 않도록)
+  const headerRe = /^(\d{1,2})-(\d{1,2})\s+\(([^)]*)\)\s+Status\s*=\s*(\S+)/i;
+
+  const pickField = (line, key) => {
+    const re = new RegExp(key + '\\s*=\\s*([+-]?\\d+(?:\\.\\d+)?)', 'i');
+    const mm = line.match(re);
+    return mm ? mm[1] : '-';
+  };
+
+  for (const line of lines) {
+    const m = line.match(headerRe);
+    if (!m) continue;
+
+    const crate = parseInt(m[1], 10);
+    const chan = parseInt(m[2], 10);
+    const name = m[3] && m[3] !== 'None' ? m[3] : '-';
+    const status = m[4];
+
+    rows.push({
+      crate,
+      chan,
+      ch_label: `${crate}-${String(chan).padStart(2, '0')}`,
+      name,
+      status,
+      vmon:  pickField(line, 'VMon'),
+      imon:  pickField(line, 'IMon'),
+      v0set: pickField(line, 'V0Set'),
+      i0set: pickField(line, 'I0Set'),
+      rup:   pickField(line, 'RUp'),
+      rdown: pickField(line, 'RDWn'),
+      vmax:  pickField(line, 'SVMax'),
+    });
+  }
+
+  if (!rows.length) return null;
+  rows.sort((a, b) => (a.crate - b.crate) || (a.chan - b.chan));
+  return rows;
+}
+
+/* ── Fetch ── */
+async function loadStatus() {
+  try {
+    const res  = await fetch('/api/hv/status-all?t=' + Date.now() + (expertMode ? '&expert=1' : ''));
+    const data = await res.json();
+    if (!res.ok || data.ok === false) throw new Error(data.error || `HTTP ${res.status}`);
+
+    lastRaw  = data.output || '(출력 없음)';
+    lastRows = parseHvOutput(lastRaw);
+
+    tsEl.textContent = '마지막: ' + new Date().toLocaleTimeString();
+    render();
+  } catch (e) {
+    msgEl.textContent  = '조회 실패: ' + e.message;
+    msgEl.className    = 'error';
+    msgEl.style.display = 'block';
+    tblWrap.style.display = 'none';
+    rawEl.style.display   = 'none';
+    tsEl.textContent = '오류';
+  }
+}
+
+function setExpertColumnsVisible(visible) {
+  document.querySelectorAll('th.expert-col').forEach(el => {
+    el.classList.toggle('hidden', !visible);
+  });
+}
+
+/* ── Auto-refresh (unified) ── */
+function applyAutoInterval(ms) {
+  autoMs = ms;
+  autoIdx = AUTO_CHOICES.indexOf(ms);
+  if (timerAuto) {
+    clearInterval(timerAuto);
+    timerAuto = null;
+  }
+  timerAuto = setInterval(loadStatus, autoMs);
+  autoBtn.textContent = `자동 갱신: ${autoMs / 1000}초`;
+  autoBtn.classList.add('active');
+}
+
+refreshBtn.addEventListener('click', loadStatus);
+autoBtn.addEventListener('click', () => {
+  const nextIdx = (autoIdx + 1) % AUTO_CHOICES.length;
+  applyAutoInterval(AUTO_CHOICES[nextIdx]);
+  loadStatus();
+});
+expertBtn.addEventListener('click', () => {
+  expertMode = !expertMode;
+  expertBtn.textContent = expertMode ? '전문가모드: 켜짐' : '전문가모드: 꺼짐';
+  expertBtn.classList.toggle('active', expertMode);
+  setExpertColumnsVisible(expertMode);
+  loadStatus();
+});
+
+/* ── Hodoscope HV card ── */
+const hodoValEl = document.getElementById('hodo-val');
+
+async function loadHodoscopeHV() {
+  try {
+    const res  = await fetch('/api/hv/hodoscope?t=' + Date.now());
+    const data = await res.json();
+    if (!res.ok || data.ok === false) throw new Error(data.error || `HTTP ${res.status}`);
+    const hv = parseFloat(data.hv);
+    if (hv === 0.0) {
+      hodoValEl.innerHTML = '<span style="color:#ef5350">Off (0.0 V)</span>';
+    } else {
+      hodoValEl.innerHTML = `<span style="color:#81c784">${hv} V</span>`;
+    }
+  } catch (e) {
+    hodoValEl.innerHTML = `<span style="color:#ef5350">읽기 실패: ${e.message}</span>`;
+  }
+}
+
+/* ── Init ── */
+setExpertColumnsVisible(false);
+loadStatus();
+loadHodoscopeHV();
+applyAutoInterval(autoMs);
+
+/* Refresh hodoscope HV at the same auto interval */
+setInterval(loadHodoscopeHV, autoMs);
+</script>
+</body>
+</html>

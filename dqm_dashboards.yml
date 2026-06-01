@@ -1,0 +1,37 @@
+EM_scan:
+  live:
+    type: full
+    method: IntADC
+    # flags:
+      # - AUXcut
+  cells:
+    - fCanvasHeatmap
+    - fCanvas_Tower5
+
+calib_scan:
+  live:
+    type: full
+    method: IntADC
+    #flags:
+      #- AUXcut
+  cells:
+    - fCanvasHeatmap
+    - fCanvas_Tower${current_tower}
+
+hv_equalization:
+  live:
+    type: full
+    method: PeakADC
+    #flags:
+      # - AUXcut
+  cells:
+    - fCanvas_Tower${current_tower}
+
+hv_equalization_sim:
+  live:
+    type: full
+    method: PeakADC
+    #flags:
+      #- AUXcut
+  cells:
+    - fCanvas_Tower${current_tower}
