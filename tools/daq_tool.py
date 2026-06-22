@@ -142,6 +142,25 @@ class DAQRunTool(BaseTool):
 
             start_time = datetime.now()
 
+            # Write initial log row immediately so the run is recorded even if killed.
+            _log_tool = RunLogTool()
+            try:
+                _log_tool.execute({
+                    "command": "write",
+                    "run_num": runnum,
+                    "start_time": start_time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "config": config,
+                    "program": params.get("program", ""),
+                    "pos_h": params.get("pos_h", ""),
+                    "pos_v": params.get("pos_v", ""),
+                    "pos_rot": params.get("pos_rot", ""),
+                    "pos_tilt": params.get("pos_tilt", ""),
+                    "beam_energy": params.get("beam_energy", ""),
+                })
+                _emit("📝 초기 로그 기록 완료 (Run 시작 기준)")
+            except Exception as _le:
+                _emit(f"⚠️ 초기 로그 기록 실패: {_le}")
+
             process = subprocess.Popen(
                 cmd,
                 shell=True,
@@ -191,6 +210,14 @@ class DAQRunTool(BaseTool):
                         )
                     except Exception:
                         pass
+                    try:
+                        _log_tool.execute({
+                            "command": "update",
+                            "run_num": runnum,
+                            "notes": "RUN KILLED",
+                        })
+                    except Exception:
+                        pass
                     output_lines.append("❌ DAQ execution stopped by user")
                     output_lines.append(f"{DAQ_RUN_NUMBER_MARKER}{runnum}")
                     return "\n".join(output_lines)
@@ -233,25 +260,20 @@ class DAQRunTool(BaseTool):
                 except Exception:
                     pass
 
-                log_tool = RunLogTool()
-                log_params = {
-                    "run_num": runnum,
-                    "evts": events,
-                    "start_time": start_time.strftime("%Y-%m-%d %H:%M:%S"),
-                    "end_time": end_time.strftime("%Y-%m-%d %H:%M:%S"),
-                    "config": config,
-                    "pos_h": params.get("pos_h", ""),
-                    "pos_v": params.get("pos_v", ""),
-                    "pos_rot": params.get("pos_rot", ""),
-                    "pos_tilt": params.get("pos_tilt", ""),
-                    "beam_energy": params.get("beam_energy", ""),
-                    "program": params.get("program", ""),
-                }
+                _duration_secs = int((end_time - start_time).total_seconds())
+                _rate = round(events / _duration_secs, 1) if _duration_secs > 0 else ""
                 try:
-                    log_result = log_tool.execute(log_params)
+                    log_result = _log_tool.execute({
+                        "command": "update",
+                        "run_num": runnum,
+                        "evts": events,
+                        "end_time": end_time.strftime("%Y-%m-%d %H:%M:%S"),
+                        "duration": _duration_secs,
+                        "rate": _rate,
+                    })
                     output_lines.append(f"📝 {log_result}")
                 except RuntimeError as _log_err:
-                    output_lines.append(f"⚠️ 로그 기록 실패: {_log_err}")
+                    output_lines.append(f"⚠️ 로그 업데이트 실패: {_log_err}")
 
                 output_lines.append(f"Config: {config} | Events: {events}")
                 output_lines.append(f"Duration: {duration}s | Started: {timestamp}")

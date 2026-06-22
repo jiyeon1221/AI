@@ -49,6 +49,8 @@ class EnergyScanSimAgent(EnergyScanAgent):
                     self.state["energy_config"][energy_key]["runs"].append(run_number)
                     self.state["energy_config"][energy_key]["collected_events"] = params.get("events", 0)
                     self.log(f"[SIM] DAQ Run {run_number} 완료: {energy_key} GeV, {params.get('events', 0)} events")
+            # 사용자 plot 확인 전까지 completed=True 차단 (실제 agent와 동일 부킹)
+            self.state["needs_plot_confirm"] = True
             return result
 
         return f"Error: Unknown tool {tool_name}"

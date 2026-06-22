@@ -454,6 +454,73 @@ html, body { height: 100%; font-family: 'Segoe UI', system-ui, sans-serif; backg
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 
 /* ── Ad-hoc result popup ──────────────────────────────────── */
+/* ── Clarify popup ──────────────────────────────────────────── */
+#clarify-overlay {
+  display: none; position: fixed; inset: 0;
+  background: rgba(0,0,0,0.55); z-index: 60;
+  align-items: center; justify-content: center;
+}
+#clarify-overlay.open { display: flex; }
+
+#clarify-panel {
+  width: min(480px, 90vw);
+  background: var(--surface);
+  border: 1px solid var(--green);
+  border-radius: 12px;
+  display: flex; flex-direction: column;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.7);
+  animation: popIn 0.2s ease;
+  overflow: hidden;
+}
+
+#clarify-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px; font-weight: 700; color: var(--green);
+  letter-spacing: 0.04em;
+}
+#clarify-close {
+  font-size: 18px; color: var(--muted); cursor: pointer;
+  line-height: 1; padding: 2px 6px; border-radius: 4px;
+  transition: color 0.15s, background 0.15s;
+}
+#clarify-close:hover { color: var(--text); background: var(--border); }
+
+#clarify-question {
+  padding: 18px 16px 12px;
+  font-size: 14px; color: var(--text); line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+#clarify-input-row {
+  display: flex; gap: 8px;
+  padding: 10px 16px 16px;
+}
+#clarify-input {
+  flex: 1;
+  background: var(--input-bg, var(--tool-bg));
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 8px 10px;
+  font-size: 13px;
+  outline: none;
+}
+#clarify-input:focus { border-color: var(--green); }
+#clarify-send-btn {
+  background: var(--green);
+  color: #000;
+  border: none;
+  border-radius: 6px;
+  padding: 8px 16px;
+  font-size: 13px; font-weight: 700;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+#clarify-send-btn:hover { opacity: 0.85; }
+
+/* ── Ad-hoc result popup ─────────────────────────────────────── */
 #adhoc-overlay {
   display: none; position: fixed; inset: 0;
   background: rgba(0,0,0,0.5); z-index: 50;
@@ -514,6 +581,56 @@ html, body { height: 100%; font-family: 'Segoe UI', system-ui, sans-serif; backg
   color: #a8c7a0;
 }
 .adhoc-tool-block.error { color: #e07070; border-left-color: var(--red); }
+
+/* ── Brain agent chat-panel blocks ───────────────────────────── */
+.brain-tool-block {
+  background: var(--tool-bg);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--green);
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: #a8c7a0;
+}
+
+.brain-plot-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--green);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.brain-plot-card img { max-width: 100%; display: block; cursor: zoom-in; }
+
+/* ── Inline clarify form inside chat ────────────────────────── */
+.clarify-inline { gap: 8px; display: flex; flex-direction: column; }
+.clarify-inline-row {
+  display: flex; gap: 8px; margin-top: 6px;
+}
+.clarify-inline-input {
+  flex: 1;
+  background: var(--tool-bg);
+  border: 1px solid var(--green);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 6px 10px;
+  font-size: 13px;
+  outline: none;
+}
+.clarify-inline-input:focus { border-color: #5cdf8a; }
+.clarify-inline-input:disabled { opacity: 0.5; }
+.clarify-inline-send {
+  background: var(--green); color: #000;
+  border: none; border-radius: 6px;
+  padding: 6px 14px; font-size: 13px; font-weight: 700;
+  cursor: pointer; transition: opacity 0.15s;
+}
+.clarify-inline-send:hover { opacity: 0.85; }
+.clarify-inline-send:disabled { opacity: 0.4; cursor: not-allowed; }
 
 .adhoc-plot-card {
   background: var(--bg);

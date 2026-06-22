@@ -10,19 +10,19 @@ Available Commands:
 - 'status': 상태 확인 (optional: channels, default='all')
 
 Channel Specification:
-- 'all' 또는 '전체': 모든 채널 (0-23)
-- [0, 1, 2]: 특정 채널 리스트 (채널 번호)
-- ['T1C', 'T2C']: Name으로 채널 지정
-- [0, 'T1C', 'T2C']: 채널 번호와 Name 혼합 가능
-- '0-5': 범위 지정
-- '0,2,4': 쉼표로 구분
-- 'T1C,T2C': Name으로 쉼표 구분
+- 'all' 또는 '전체': 모든 채널 (전체 슬롯)
+- 'even': 짝수 채널번호 (모든 슬롯)
+- 'odd': 홀수 채널번호 (모든 슬롯)
+- 'slot:12': 슬롯 12의 모든 채널
+- 'slot:12:even' / 'slot:12:odd': 슬롯 + 짝홀 조합
+- ['T1C', 'T2C']: Name으로 지정 → config에서 (slot, ch) 자동 매핑
+- [{'slot': 11, 'ch': 3}]: 명시적 (slot, ch) 지정
+- '11:3': slot 11, ch 3
 """
 
-import json
 import re
 import shlex
-from typing import Dict, Any, List, Tuple
+from typing import Any, Dict, List, Tuple
 from datetime import datetime
 
 import paramiko
@@ -50,39 +50,31 @@ HV_CONFIG_RELATIVE_PATH = f"../config/{HV_CONFIG_FILENAME}"
 HV_CONFIG_FULL_PATH = _hv_paths.get('ConfigFullPath')
 HV_ENV_PRE_COMMAND = "export LD_LIBRARY_PATH=/usr/lib64/:$LD_LIBRARY_PATH"
 
+# (slot, ch) 타입 별칭
+SlotCh = Tuple[int, int]
+
 
 class HVControlTool(BaseTool):
-    """HV 제어 Tool"""
-    
+    """HV 제어 Tool — multi-slot 지원"""
+
     def __init__(self):
         super().__init__(
             name="hv_execute_tool",
             description=(
-                "Control CAEN high voltage (HV) system. "
+                "Control CAEN high voltage (HV) system with multi-slot support. "
                 "Available commands: "
                 "1) 'voltage' - Set voltage (requires: channels, voltage), "
                 "2) 'current' - Set current (requires: channels, current), "
                 "3) 'on' - Turn on HV channels (requires: channels), "
                 "4) 'off' - Turn off HV channels (requires: channels), "
                 "5) 'status' - Check HV status (optional: channels). "
-                "For channels parameter, use 'all' for all channels (0-23), "
-                "channel numbers like [0,1,2], or channel names like ['T1C','T2C'], "
-                "or mix them like [0,'T1C']. Case-insensitive for names. "
-                "Aux channels (trigger PMTs) can be specified by name: ['TRIG1','TRIG2']."
+                "Channels: 'all', 'even', 'odd', 'slot:12', 'slot:12:even', "
+                "names like ['T1C','T2C'], explicit [{'slot':11,'ch':3}], or '11:3' pairs."
             )
         )
         self.ssh_client = None
-    
+
     def execute(self, params: Dict[str, Any]) -> str:
-        """
-        Args:
-            params:
-                - command (str): 'voltage' | 'current' | 'on' | 'off' | 'status'
-                - channels (list or str, optional): 채널 지정 ('all', [0,1], ['T1C'], 범위 등)
-                - channel_values (dict, optional): 채널별 다른 값 설정
-                - voltage (float, optional): 전압 값 (V)
-                - current (float, optional): 전류 값 (μA)
-        """
         valid, error = self.validate_params(params, ["command"])
         if not valid:
             raise RuntimeError(f"파라미터 오류: {error}")
@@ -101,6 +93,14 @@ class HVControlTool(BaseTool):
                 return self._set_voltage(params)
             elif command == "current":
                 return self._set_current(params)
+            elif command == "svmax":
+                return self._set_svmax(params)
+            elif command == "rup":
+                return self._set_ramp(params, "RampUp")
+            elif command == "rdown":
+                return self._set_ramp(params, "RampDown")
+            elif command == "name":
+                return self._set_name(params)
             elif command == "on":
                 return self._power_toggle(params, "On")
             elif command == "off":
@@ -110,7 +110,7 @@ class HVControlTool(BaseTool):
             else:
                 raise RuntimeError(
                     f"Unsupported command: {command}. "
-                    f"Supported: voltage, current, on, off, status"
+                    f"Supported: voltage, current, svmax, rup, rdown, name, on, off, status"
                 )
 
         except RuntimeError:
@@ -120,333 +120,342 @@ class HVControlTool(BaseTool):
             raise RuntimeError(
                 f"HV Control Error: {str(e)}\n{traceback.format_exc()}"
             ) from e
-        
+
         finally:
-            # SSH 연결 유지 (재사용을 위해)
             pass
-    
+
+    # ===== 명령 구현 =====
+
     def _set_voltage(self, params: Dict[str, Any]) -> str:
         """전압 설정"""
         if "channel_values" in params:
             channel_values = params["channel_values"]
             if not channel_values:
                 return "❌ channel_values가 비어있습니다"
-            
+
             rows = self._read_config_rows()
-            row_map = {row['ch']: row for row in rows}
-            try:
-                name_to_ch_map = self._get_name_to_channel_map(rows)
-            except ValueError as e:
-                return str(e)
-            
-            resolved_channels = []
+            row_map, name_map, all_pairs = self._build_lookup(rows)
+
+            resolved: List[SlotCh] = []
             for identifier, voltage in channel_values.items():
-                ch_list = self._resolve_single_identifier(str(identifier), name_to_ch_map)
-                if not ch_list:
+                pairs = self._resolve_identifier(str(identifier), name_map, all_pairs)
+                if not pairs:
                     return f"❌ '{identifier}'에 해당하는 채널을 찾을 수 없습니다"
-                
-                for ch in ch_list:
-                    row = row_map.get(ch)
+                for pair in pairs:
+                    row = row_map.get(pair)
                     if not row:
-                        return f"❌ Ch{ch}이(가) config.txt에 없습니다"
+                        return f"❌ Slot{pair[0]} Ch{pair[1]}이(가) config.txt에 없습니다"
                     row['V0Set'] = self._format_numeric(voltage)
-                    resolved_channels.append(ch)
-            
+                    resolved.append(pair)
+
             self._write_config_rows(rows)
-            
-            cmd = f"./HVWrappdemo --config {HV_CONFIG_RELATIVE_PATH} --Pw On"
-            stdout, stderr = self._run_remote_command(cmd)
-            
-            output_lines = []
-            output_lines.append("🔧 HV Voltage Command Executed")
-            
+
             changes = []
             for identifier, voltage in channel_values.items():
-                ch_list = self._resolve_single_identifier(str(identifier), name_to_ch_map)
-                for ch in ch_list:
-                    changes.append(f"Ch{ch}→{self._format_numeric(voltage)}V")
-            output_lines.append(f"📋 Request: {', '.join(sorted(changes))}")
-            output_lines.append(f"💻 Command: {cmd}")
-            output_lines.append("")
-            
-            if stdout and stdout.strip():
-                output_lines.append("📄 Output:")
-                output_lines.extend(stdout.strip().split('\n'))
-                output_lines.append("")
-            
-            if stderr and stderr.strip():
-                output_lines.append("⚠️ Stderr:")
-                output_lines.extend(stderr.strip().split('\n'))
-            
-            return "\n".join(output_lines)
-        
+                for pair in self._resolve_identifier(str(identifier), name_map, all_pairs):
+                    changes.append(f"Slot{pair[0]}Ch{pair[1]}→{self._format_numeric(voltage)}V")
+
+            out = ["🔧 HV Voltage Command Executed", f"📋 Request: {', '.join(sorted(changes))}", ""]
+            out += self._run_per_slot(sorted(set(resolved)), "--config {cfg} --Pw On".format(cfg=HV_CONFIG_RELATIVE_PATH))
+            return "\n".join(out)
+
         else:
             if "channel" in params and "channels" not in params:
                 params["channels"] = [params["channel"]]
             if "value" in params and "voltage" not in params:
                 params["voltage"] = params["value"]
-            
             if "channels" not in params or "voltage" not in params:
                 return "❌ channels와 voltage 파라미터가 필요합니다"
-            
+
             try:
-                channels = self._parse_channels(params["channels"])
+                pairs = self._parse_channels(params["channels"])
             except ValueError as e:
                 return str(e)
-            
-            if not channels:
+            if not pairs:
                 return "❌ 유효한 채널을 찾을 수 없습니다"
-            
+
             voltage = float(params["voltage"])
-            
             rows = self._read_config_rows()
-            row_map = {row['ch']: row for row in rows}
-            
-            for ch in channels:
-                row = row_map.get(ch)
+            row_map, _, _ = self._build_lookup(rows)
+
+            for pair in pairs:
+                row = row_map.get(pair)
                 if not row:
-                    return f"❌ Ch{ch}이(가) config.txt에 없습니다"
+                    return f"❌ Slot{pair[0]} Ch{pair[1]}이(가) config.txt에 없습니다"
                 row['V0Set'] = self._format_numeric(voltage)
-            
+
             self._write_config_rows(rows)
-            
-            cmd = f"./HVWrappdemo --config {HV_CONFIG_RELATIVE_PATH} --Pw On"
-            stdout, stderr = self._run_remote_command(cmd)
-            
-            output_lines = []
-            output_lines.append("🔧 HV Voltage Command Executed")
-            
-            if len(channels) == 1:
-                output_lines.append(f"📋 Request: Ch{channels[0]} → {self._format_numeric(voltage)}V")
-            else:
-                ch_list = ", ".join(f"Ch{ch}" for ch in channels)
-                output_lines.append(f"📋 Request: {ch_list} → {self._format_numeric(voltage)}V")
-            output_lines.append(f"💻 Command: {cmd}")
-            output_lines.append("")
-            
-            if stdout and stdout.strip():
-                output_lines.append("📄 Output:")
-                output_lines.extend(stdout.strip().split('\n'))
-                output_lines.append("")
-            
-            if stderr and stderr.strip():
-                output_lines.append("⚠️ Stderr:")
-                output_lines.extend(stderr.strip().split('\n'))
-            
-            return "\n".join(output_lines)
-    
+
+            out = ["🔧 HV Voltage Command Executed"]
+            out.append(self._fmt_request(pairs) + f" → {self._format_numeric(voltage)}V")
+            out.append("")
+            out += self._run_per_slot(pairs, f"--config {HV_CONFIG_RELATIVE_PATH} --Pw On")
+            return "\n".join(out)
+
     def _set_current(self, params: Dict[str, Any]) -> str:
         """전류 설정"""
         if "channel_values" in params:
             channel_values = params["channel_values"]
             if not channel_values:
                 return "❌ channel_values가 비어있습니다"
-            
+
             rows = self._read_config_rows()
-            row_map = {row['ch']: row for row in rows}
-            try:
-                name_to_ch_map = self._get_name_to_channel_map(rows)
-            except ValueError as e:
-                return str(e)
-            
-            resolved_channels = []
+            row_map, name_map, all_pairs = self._build_lookup(rows)
+
+            resolved: List[SlotCh] = []
             for identifier, current in channel_values.items():
-                ch_list = self._resolve_single_identifier(str(identifier), name_to_ch_map)
-                if not ch_list:
+                pairs = self._resolve_identifier(str(identifier), name_map, all_pairs)
+                if not pairs:
                     return f"❌ '{identifier}'에 해당하는 채널을 찾을 수 없습니다"
-                
-                for ch in ch_list:
-                    row = row_map.get(ch)
+                for pair in pairs:
+                    row = row_map.get(pair)
                     if not row:
-                        return f"❌ Ch{ch}이(가) config.txt에 없습니다"
+                        return f"❌ Slot{pair[0]} Ch{pair[1]}이(가) config.txt에 없습니다"
                     row['I0Set'] = self._format_numeric(current)
-                    resolved_channels.append(ch)
-            
+                    resolved.append(pair)
+
             self._write_config_rows(rows)
-            
-            cmd = f"./HVWrappdemo --config {HV_CONFIG_RELATIVE_PATH} --Pw On"
-            stdout, stderr = self._run_remote_command(cmd)
-            
-            output_lines = []
-            output_lines.append("🔧 HV Current Command Executed")
-            
+
             changes = []
             for identifier, current in channel_values.items():
-                ch_list = self._resolve_single_identifier(str(identifier), name_to_ch_map)
-                for ch in ch_list:
-                    changes.append(f"Ch{ch}→{self._format_numeric(current)}μA")
-            output_lines.append(f"📋 Request: {', '.join(sorted(changes))}")
-            output_lines.append(f"💻 Command: {cmd}")
-            output_lines.append("")
-            
-            if stdout and stdout.strip():
-                output_lines.append("📄 Output:")
-                output_lines.extend(stdout.strip().split('\n'))
-                output_lines.append("")
-            
-            if stderr and stderr.strip():
-                output_lines.append("⚠️ Stderr:")
-                output_lines.extend(stderr.strip().split('\n'))
-            
-            return "\n".join(output_lines)
-        
+                for pair in self._resolve_identifier(str(identifier), name_map, all_pairs):
+                    changes.append(f"Slot{pair[0]}Ch{pair[1]}→{self._format_numeric(current)}μA")
+
+            out = ["🔧 HV Current Command Executed", f"📋 Request: {', '.join(sorted(changes))}", ""]
+            out += self._run_per_slot(sorted(set(resolved)), f"--config {HV_CONFIG_RELATIVE_PATH} --Pw On")
+            return "\n".join(out)
+
         else:
             if "channel" in params and "channels" not in params:
                 params["channels"] = [params["channel"]]
             if "value" in params and "current" not in params:
                 params["current"] = params["value"]
-            
             if "channels" not in params or "current" not in params:
                 return "❌ channels와 current 파라미터가 필요합니다"
-            
+
             try:
-                channels = self._parse_channels(params["channels"])
+                pairs = self._parse_channels(params["channels"])
             except ValueError as e:
                 return str(e)
-            
-            if not channels:
+            if not pairs:
                 return "❌ 유효한 채널을 찾을 수 없습니다"
-            
+
             current = float(params["current"])
-            
             rows = self._read_config_rows()
-            row_map = {row['ch']: row for row in rows}
-            
-            for ch in channels:
-                row = row_map.get(ch)
+            row_map, _, _ = self._build_lookup(rows)
+
+            for pair in pairs:
+                row = row_map.get(pair)
                 if not row:
-                    return f"❌ Ch{ch}이(가) config.txt에 없습니다"
+                    return f"❌ Slot{pair[0]} Ch{pair[1]}이(가) config.txt에 없습니다"
                 row['I0Set'] = self._format_numeric(current)
-            
+
             self._write_config_rows(rows)
-            
-            cmd = f"./HVWrappdemo --config {HV_CONFIG_RELATIVE_PATH} --Pw On"
-            stdout, stderr = self._run_remote_command(cmd)
-            
-            output_lines = []
-            output_lines.append("🔧 HV Current Command Executed")
-            
-            if len(channels) == 1:
-                output_lines.append(f"📋 Request: Ch{channels[0]} → {self._format_numeric(current)}μA")
-            else:
-                ch_list = ", ".join(f"Ch{ch}" for ch in channels)
-                output_lines.append(f"📋 Request: {ch_list} → {self._format_numeric(current)}μA")
-            output_lines.append(f"💻 Command: {cmd}")
-            output_lines.append("")
-            
-            if stdout and stdout.strip():
-                output_lines.append("📄 Output:")
-                output_lines.extend(stdout.strip().split('\n'))
-                output_lines.append("")
-            
-            if stderr and stderr.strip():
-                output_lines.append("⚠️ Stderr:")
-                output_lines.extend(stderr.strip().split('\n'))
-            
-            return "\n".join(output_lines)
-    
+
+            out = ["🔧 HV Current Command Executed"]
+            out.append(self._fmt_request(pairs) + f" → {self._format_numeric(current)}μA")
+            out.append("")
+            out += self._run_per_slot(pairs, f"--config {HV_CONFIG_RELATIVE_PATH} --Pw On")
+            return "\n".join(out)
+
+    def _set_svmax(self, params: Dict[str, Any]) -> str:
+        """SVMax 설정"""
+        if "channel" in params and "channels" not in params:
+            params["channels"] = [params["channel"]]
+        if "value" in params and "svmax" not in params:
+            params["svmax"] = params["value"]
+        if "channels" not in params or "svmax" not in params:
+            return "❌ channels와 svmax 파라미터가 필요합니다"
+
+        try:
+            pairs = self._parse_channels(params["channels"])
+        except ValueError as e:
+            return str(e)
+        if not pairs:
+            return "❌ 유효한 채널을 찾을 수 없습니다"
+
+        svmax = float(params["svmax"])
+        rows = self._read_config_rows()
+        row_map, _, _ = self._build_lookup(rows)
+
+        for pair in pairs:
+            row = row_map.get(pair)
+            if not row:
+                return f"❌ Slot{pair[0]} Ch{pair[1]}이(가) config.txt에 없습니다"
+            row['SVMax'] = self._format_numeric(svmax)
+
+        self._write_config_rows(rows)
+
+        out = ["🔧 HV SVMax Command Executed"]
+        out.append(self._fmt_request(pairs) + f" SVMax → {self._format_numeric(svmax)}")
+        out.append("")
+        out += self._run_per_slot(pairs, f"--config {HV_CONFIG_RELATIVE_PATH} --Pw On")
+        return "\n".join(out)
+
+    def _set_name(self, params: Dict[str, Any]) -> str:
+        """채널 이름 변경"""
+        if "channel" in params and "channels" not in params:
+            params["channels"] = [params["channel"]]
+        if "channels" not in params or "name" not in params:
+            return "❌ channels와 name 파라미터가 필요합니다"
+
+        try:
+            pairs = self._parse_channels(params["channels"])
+        except ValueError as e:
+            return str(e)
+        if not pairs:
+            return "❌ 유효한 채널을 찾을 수 없습니다"
+
+        new_name = str(params["name"]).strip()
+        if not new_name:
+            return "❌ name이 비어있습니다"
+
+        rows = self._read_config_rows()
+        row_map, _, _ = self._build_lookup(rows)
+
+        changes = []
+        for pair in pairs:
+            row = row_map.get(pair)
+            if not row:
+                return f"❌ Slot{pair[0]} Ch{pair[1]}이(가) config.txt에 없습니다"
+            old_name = row['name']
+            row['name'] = new_name
+            changes.append(f"Slot{pair[0]} Ch{pair[1]}: {old_name} → {new_name}")
+
+        self._write_config_rows(rows)
+        return "\n".join(["🔧 HV Name Changed"] + changes)
+
+    def _set_ramp(self, params: Dict[str, Any], field: str) -> str:
+        """RampUp / RampDown 설정"""
+        key = "rup" if field == "RampUp" else "rdown"
+        if "channel" in params and "channels" not in params:
+            params["channels"] = [params["channel"]]
+        if "value" in params and key not in params:
+            params[key] = params["value"]
+        if "channels" not in params or key not in params:
+            return f"❌ channels와 {key} 파라미터가 필요합니다"
+
+        try:
+            pairs = self._parse_channels(params["channels"])
+        except ValueError as e:
+            return str(e)
+        if not pairs:
+            return "❌ 유효한 채널을 찾을 수 없습니다"
+
+        value = float(params[key])
+        rows = self._read_config_rows()
+        row_map, _, _ = self._build_lookup(rows)
+
+        for pair in pairs:
+            row = row_map.get(pair)
+            if not row:
+                return f"❌ Slot{pair[0]} Ch{pair[1]}이(가) config.txt에 없습니다"
+            row[field] = self._format_numeric(value)
+
+        self._write_config_rows(rows)
+
+        out = [f"🔧 HV {field} Command Executed"]
+        out.append(self._fmt_request(pairs) + f" {field} → {self._format_numeric(value)}")
+        out.append("")
+        out += self._run_per_slot(pairs, f"--config {HV_CONFIG_RELATIVE_PATH} --Pw On")
+        return "\n".join(out)
+
     def _power_toggle(self, params: Dict[str, Any], state: str) -> str:
         """전원 On/Off"""
         if "channel" in params and "channels" not in params:
             params["channels"] = [params["channel"]]
-        
         if "channels" not in params:
             return "❌ channels 파라미터가 필요합니다"
-        
+
         try:
-            channels = self._parse_channels(params["channels"])
+            pairs = self._parse_channels(params["channels"])
         except ValueError as e:
             return str(e)
-        
-        if not channels:
+        if not pairs:
             return "❌ 유효한 채널을 찾을 수 없습니다"
-        
-        cmd = f"./HVWrappdemo --config {HV_CONFIG_RELATIVE_PATH} --Pw {state}"
-        stdout, stderr = self._run_remote_command(cmd)
-        
-        output_lines = []
-        output_lines.append(f"🔧 HV Power {state} Command Executed")
-        
-        if len(channels) == 1:
-            output_lines.append(f"📋 Request: Ch{channels[0]} → {state}")
-        else:
-            ch_list = ", ".join(f"Ch{ch}" for ch in channels)
-            output_lines.append(f"📋 Request: {ch_list} → {state}")
-        output_lines.append(f"💻 Command: {cmd}")
-        output_lines.append("")
-        
-        if stdout and stdout.strip():
-            output_lines.append("📄 Output:")
-            output_lines.extend(stdout.strip().split('\n'))
-            output_lines.append("")
-        
-        if stderr and stderr.strip():
-            output_lines.append("⚠️ Stderr:")
-            output_lines.extend(stderr.strip().split('\n'))
-        
-        return "\n".join(output_lines)
-    
+
+        out = [f"🔧 HV Power {state} Command Executed"]
+        out.append(self._fmt_request(pairs) + f" → {state}")
+        out.append("")
+        out += self._run_per_slot(pairs, f"--Pw {state}")
+        return "\n".join(out)
+
     def _get_status(self, params: Dict[str, Any]) -> str:
         """상태 확인"""
         if "channel" in params and "channels" not in params:
             params["channels"] = [params["channel"]]
-        
-        channels = params.get("channels", "all")
-        
-        if channels == "all" or channels == "전체":
-            ch_arg = "all"
+
+        channels_param = params.get("channels", "all")
+
+        if channels_param in ("all", "전체"):
+            rows = self._read_config_rows()
+            pairs = [(row['slot'], row['ch']) for row in rows]
         else:
             try:
-                resolved_channels = self._parse_channels(channels)
+                pairs = self._parse_channels(channels_param)
             except ValueError as e:
                 return str(e)
-            
-            if not resolved_channels:
+            if not pairs:
                 return "❌ 유효한 채널을 찾을 수 없습니다"
-            
-            ch_arg = " ".join(map(str, resolved_channels))
-        
-        command = f"./HVWrappdemo --ch {ch_arg} --Status --VMon --IMon --V0Set --I0Set"
-        stdout, stderr = self._run_remote_command(command)
-        
-        output_lines = []
-        output_lines.append("📊 HV Status Query")
-        output_lines.append(f"📋 Request: Channels {ch_arg}")
-        output_lines.append(f"💻 Command: {command}")
-        output_lines.append(f"⏰ Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        output_lines.append("")
-        
-        if stdout and stdout.strip():
-            output_lines.append("📄 Output:")
-            output_lines.extend(stdout.strip().split('\n'))
-            output_lines.append("")
-        
-        if stderr and stderr.strip():
-            output_lines.append("⚠️ Stderr:")
-            output_lines.extend(stderr.strip().split('\n'))
-        
-        return "\n".join(output_lines)
-    
-    # ===== SSH 및 Config 관리 헬퍼 함수들 =====
-    
+
+        out = [
+            "📊 HV Status Query",
+            f"⏰ Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            ""
+        ]
+        out += self._run_per_slot(pairs, "--Status --VMon --IMon --V0Set --I0Set")
+        return "\n".join(out)
+
+    # ===== 공통 헬퍼 =====
+
+    def _run_per_slot(self, pairs: List[SlotCh], extra_args: str) -> List[str]:
+        """(slot, ch) 리스트를 슬롯별로 그룹화하여 명령 실행, 결과 라인 리스트 반환"""
+        out = []
+        for slot, chs in self._group_by_slot(pairs).items():
+            ch_arg = " ".join(map(str, chs))
+            cmd = f"./HVWrappdemo --slot {slot} --ch {ch_arg} {extra_args}"
+            stdout, stderr = self._run_remote_command(cmd)
+            out.append(f"💻 Slot {slot}: {cmd}")
+            if stdout and stdout.strip():
+                out.append("📄 Output:")
+                out.extend(stdout.strip().split('\n'))
+            if stderr and stderr.strip():
+                out.append("⚠️ Stderr:")
+                out.extend(stderr.strip().split('\n'))
+            out.append("")
+        return out
+
+    def _group_by_slot(self, pairs: List[SlotCh]) -> Dict[int, List[int]]:
+        """(slot, ch) 리스트 → {slot: [ch, ...]} (슬롯·채널 정렬)"""
+        groups: Dict[int, List[int]] = {}
+        for slot, ch in pairs:
+            groups.setdefault(slot, []).append(ch)
+        return {slot: sorted(chs) for slot, chs in sorted(groups.items())}
+
+    def _fmt_request(self, pairs: List[SlotCh]) -> str:
+        """📋 Request 접두사 포함 채널 목록 문자열"""
+        if len(pairs) == 1:
+            return f"📋 Request: Slot{pairs[0][0]} Ch{pairs[0][1]}"
+        items = ", ".join(f"Slot{s}Ch{c}" for s, c in pairs)
+        return f"📋 Request: {items}"
+
+    # ===== SSH 관리 =====
+
     def _ensure_connection(self) -> bool:
-        """SSH 연결 확인 및 재연결"""
         try:
             if (self.ssh_client and
-                self.ssh_client.get_transport() and
-                self.ssh_client.get_transport().is_active()):
+                    self.ssh_client.get_transport() and
+                    self.ssh_client.get_transport().is_active()):
                 return True
         except Exception:
             pass
-        
         return self._connect_ssh()
-    
+
     def _connect_ssh(self) -> bool:
-        """SSH 연결"""
         try:
             self.ssh_client = paramiko.SSHClient()
             self.ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            
+
             if HV_SSH_CONFIG['key_path']:
                 key = paramiko.RSAKey.from_private_key_file(HV_SSH_CONFIG['key_path'])
                 self.ssh_client.connect(
@@ -467,9 +476,8 @@ class HVControlTool(BaseTool):
             return True
         except Exception:
             return False
-    
+
     def _run_remote_command(self, command: str) -> Tuple[str, str]:
-        """원격 명령 실행"""
         command_segments = [
             f"cd {shlex.quote(HV_WRAPPER_WORKDIR)}",
             HV_ENV_PRE_COMMAND,
@@ -477,192 +485,265 @@ class HVControlTool(BaseTool):
         ]
         remote_cmd = " && ".join(command_segments)
         wrapped = f'bash -c {shlex.quote(remote_cmd)}'
-        
+
         stdin, stdout, stderr = self.ssh_client.exec_command(wrapped, timeout=30)
         output = stdout.read().decode('utf-8', errors='ignore').strip()
         error = stderr.read().decode('utf-8', errors='ignore').strip()
-        
+
         return output, error
-    
+
+    # ===== Config 읽기/쓰기 =====
+
     def _read_config_rows(self) -> List[Dict[str, Any]]:
-        """config.txt 읽기"""
+        """config.txt 읽기 — 첫 열: slot, 두 번째 열: ch"""
         sftp = self.ssh_client.open_sftp()
         try:
             with sftp.open(HV_CONFIG_FULL_PATH, 'r') as f:
                 content = f.read().decode('utf-8', errors='ignore')
         finally:
             sftp.close()
-        
-        lines = [line.strip() for line in content.splitlines() if line.strip()]
+
         rows = []
-        in_channel_section = False
-        
-        for line in lines:
-            if line.startswith('#'):
+        in_data = False
+
+        for line in content.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith('#'):
                 continue
-            if line.startswith('ch ') or line.startswith('ch\t'):
-                in_channel_section = True
+            if re.match(r'^slot\b', stripped, re.IGNORECASE):
+                in_data = True
                 continue
-            if not in_channel_section:
+            if not in_data:
                 continue
-            
-            parts = line.split()
-            if len(parts) < 4:
+
+            parts = stripped.split()
+            if len(parts) < 6:
                 continue
-            
+
             try:
-                ch_str = parts[0]
+                slot = int(parts[0])
+                ch_str = parts[1]
                 match = re.match(r'^(\d+)', ch_str)
                 ch = int(match.group(1)) if match else int(ch_str)
             except (ValueError, AttributeError):
                 continue
-            
+
             rows.append({
-                'ch': ch,
-                'ch_str': ch_str,
-                'name': parts[1],
-                'V0Set': parts[2],
-                'I0Set': parts[3]
+                'slot':     slot,
+                'ch':       ch,
+                'ch_str':   ch_str,
+                'name':     parts[2],
+                'V0Set':    parts[3],
+                'I0Set':    parts[4],
+                'SVMax':    parts[5],
+                'RampUp':   parts[6] if len(parts) > 6 else None,
+                'RampDown': parts[7] if len(parts) > 7 else None,
             })
-        
+
         return rows
-    
+
     def _write_config_rows(self, rows: List[Dict[str, Any]]):
-        """config.txt 쓰기"""
+        """config.txt 쓰기 — 첫 열: slot"""
         sftp = self.ssh_client.open_sftp()
         try:
             with sftp.open(HV_CONFIG_FULL_PATH, 'r') as f:
                 content = f.read().decode('utf-8', errors='ignore')
-            
+
             original_lines = content.splitlines()
             header_lines = []
             channel_header_idx = -1
-            
+
             for idx, line in enumerate(original_lines):
-                stripped = line.strip()
-                if stripped.startswith('ch ') or stripped.startswith('ch\t'):
+                if re.match(r'^slot\b', line.strip(), re.IGNORECASE):
                     channel_header_idx = idx
                     break
                 header_lines.append(line)
-            
+
             new_lines = header_lines
             if channel_header_idx >= 0:
                 new_lines.append(original_lines[channel_header_idx])
             else:
-                new_lines.append("ch name V0Set I0Set")
-            
-            for row in sorted(rows, key=lambda r: r['ch']):
+                new_lines.append("slot ch name V0Set I0Set SVMax RampUp RampDown")
+
+            for row in sorted(rows, key=lambda r: (r['slot'], r['ch'])):
                 ch_id = row.get('ch_str', str(row['ch']))
-                line = f"{ch_id} {row['name']} {row['V0Set']} {row['I0Set']}"
+                line = f"{row['slot']} {ch_id} {row['name']} {row['V0Set']} {row['I0Set']} {row['SVMax']}"
+                if row.get('RampUp') is not None:
+                    line += f" {row['RampUp']}"
+                if row.get('RampDown') is not None:
+                    line += f" {row['RampDown']}"
                 new_lines.append(line)
-            
+
             temp_path = f"{HV_CONFIG_FULL_PATH}.tmp"
             with sftp.open(temp_path, 'w') as f:
                 f.write("\n".join(new_lines) + "\n")
-            
+
             try:
                 sftp.remove(HV_CONFIG_FULL_PATH)
             except FileNotFoundError:
                 pass
             sftp.rename(temp_path, HV_CONFIG_FULL_PATH)
-        
+
         finally:
             sftp.close()
-    
-    def _get_name_to_channel_map(self, rows: List[Dict[str, Any]]) -> Dict[str, List[int]]:
-        """
-        Name → 채널 번호 리스트 매핑 생성
-        - None인 채널은 제외
-        - 중복 Name이 있으면 에러 발생
-        - 대소문자 구분 없음
-        """
-        name_map = {}
-        
+
+    # ===== 채널 파싱 / 조회 =====
+
+    def _build_lookup(self, rows: List[Dict[str, Any]]):
+        """rows에서 (row_map, name_map, all_pairs) 반환"""
+        row_map: Dict[SlotCh, Dict] = {(r['slot'], r['ch']): r for r in rows}
+        name_map: Dict[str, SlotCh] = self._get_name_map(rows)
+        all_pairs: List[SlotCh] = [(r['slot'], r['ch']) for r in rows]
+        return row_map, name_map, all_pairs
+
+    def _get_name_map(self, rows: List[Dict[str, Any]]) -> Dict[str, SlotCh]:
+        """Name → (slot, ch) 매핑. None 채널 제외, 중복 시 ValueError."""
+        bucket: Dict[str, List[SlotCh]] = {}
         for row in rows:
             name = row.get('name', '').strip()
-            ch = row['ch']
-            
             if not name or name.lower() == 'none':
                 continue
-            
-            name_key = name.upper()
-            
-            if name_key not in name_map:
-                name_map[name_key] = []
-            name_map[name_key].append(ch)
-        
-        duplicates = {name: ch_list for name, ch_list in name_map.items() if len(ch_list) > 1}
-        if duplicates:
-            dup_info = ', '.join([f"{name}(Ch{',Ch'.join(map(str, ch_list))})" 
-                                 for name, ch_list in duplicates.items()])
-            raise ValueError(f"❌ 중복된 Name이 있습니다: {dup_info}")
-        
-        # 리스트를 단일 값으로 변환 (중복이 없으므로)
-        return {name: ch_list[0] if len(ch_list) == 1 else ch_list 
-                for name, ch_list in name_map.items()}
-    
-    def _resolve_single_identifier(self, identifier: str, name_to_ch_map: Dict[str, Any]) -> List[int]:
-        """단일 식별자(Name 또는 채널 번호)를 채널 번호 리스트로 변환"""
-        identifier = str(identifier).strip()
-        
-        if re.match(r'^\d+', identifier):
-            try:
-                return [int(identifier)]
-            except ValueError:
-                return []
-        
-        name_key = identifier.upper()
-        if name_key in name_to_ch_map:
-            ch = name_to_ch_map[name_key]
-            return [ch] if isinstance(ch, int) else ch
-        
-        return []
-    
-    def _parse_channels(self, channels: Any) -> List[int]:
-        """채널 표현을 리스트로 변환 (번호/Name 모두 지원, 대소문자 무시)"""
-        rows = self._read_config_rows()
-        name_to_ch_map = self._get_name_to_channel_map(rows)
-        
-        if isinstance(channels, list):
-            result = []
-            for item in channels:
-                ch_list = self._resolve_single_identifier(str(item), name_to_ch_map)
-                result.extend(ch_list)
-            return sorted(set(result))
-        
-        expr = str(channels).strip()
-        if expr.lower() in {'전체', 'all'}:
-            expr = '0-23'
-        
-        result = []
-        for part in expr.split(','):
-            part = part.strip()
-            if '-' in part:
-                start_str, end_str = part.split('-', 1)
-                start_str = start_str.strip()
-                end_str = end_str.strip()
+            bucket.setdefault(name.upper(), []).append((row['slot'], row['ch']))
 
-                if re.match(r'^\d+$', start_str) and re.match(r'^\d+$', end_str):
-                    result.extend(range(int(start_str), int(end_str) + 1))
+        duplicates = {n: ps for n, ps in bucket.items() if len(ps) > 1}
+        if duplicates:
+            dup_info = ', '.join(
+                n + "(" + ", ".join(f"Slot{s}Ch{c}" for s, c in ps) + ")"
+                for n, ps in duplicates.items()
+            )
+            raise ValueError(f"❌ 중복된 Name이 있습니다: {dup_info}")
+
+        return {n: ps[0] for n, ps in bucket.items()}
+
+    def _resolve_identifier(self, identifier: str,
+                             name_map: Dict[str, SlotCh],
+                             all_pairs: List[SlotCh]) -> List[SlotCh]:
+        """단일 식별자 → (slot, ch) 리스트.
+
+        지원 형식:
+        - "T1C"      → name lookup
+        - "11:3"     → 명시적 slot:ch
+        - "3"        → ch==3 인 모든 (slot, ch) [슬롯 무관]
+        """
+        identifier = str(identifier).strip()
+
+        # "slot:ch" 명시 형식
+        m = re.match(r'^(\d+):(\d+)$', identifier)
+        if m:
+            return [(int(m.group(1)), int(m.group(2)))]
+
+        # 순수 숫자 → 슬롯 정보 없이 ch만 지정된 경우 → 에러로 명시 요청
+        if re.match(r'^\d+$', identifier):
+            ch = int(identifier)
+            slots = sorted({s for s, c in all_pairs if c == ch})
+            if not slots:
+                raise ValueError(f"❌ Ch{ch}에 해당하는 채널이 config.txt에 없습니다")
+            slot_list = ", ".join(map(str, slots))
+            raise ValueError(
+                f"❌ Ch{ch}만으로는 슬롯을 특정할 수 없습니다 "
+                f"(가능한 슬롯: {slot_list}). "
+                f"'slot:{slot_list.split(',')[0].strip()}:{ch}' 형식으로 지정해주세요."
+            )
+
+        # Name lookup
+        name_key = identifier.upper()
+        if name_key in name_map:
+            return [name_map[name_key]]
+
+        return []
+
+    def _parse_channels(self, channels: Any) -> List[SlotCh]:
+        """채널 표현을 (slot, ch) 리스트로 변환 (정렬·중복제거)"""
+        rows = self._read_config_rows()
+        _, name_map, all_pairs = self._build_lookup(rows)
+
+        # 리스트 형태
+        if isinstance(channels, list):
+            result: List[SlotCh] = []
+            for item in channels:
+                if isinstance(item, dict):
+                    s = item.get('slot')
+                    c = item.get('ch')
+                    if s is not None and c is not None:
+                        result.append((int(s), int(c)))
                 else:
-                    return []
-            else:
-                ch_list = self._resolve_single_identifier(part, name_to_ch_map)
-                result.extend(ch_list)
-        
+                    key = str(item).strip().lower()
+                    if key in ('all', '전체'):
+                        result.extend(all_pairs)
+                    elif key == 'even':
+                        result.extend((s, c) for s, c in all_pairs if c % 2 == 0)
+                    elif key == 'odd':
+                        result.extend((s, c) for s, c in all_pairs if c % 2 == 1)
+                    else:
+                        m = re.match(r'^slot[:\s]?(\d+)[:\s](even|odd)$', key)
+                        if m:
+                            tgt = int(m.group(1))
+                            par = 0 if m.group(2) == 'even' else 1
+                            result.extend((s, c) for s, c in all_pairs if s == tgt and c % 2 == par)
+                        else:
+                            result.extend(self._resolve_identifier(str(item), name_map, all_pairs))
+            return sorted(set(result))
+
+        expr = str(channels).strip()
+
+        # all / 전체
+        if expr.lower() in ('all', '전체'):
+            return sorted(set(all_pairs))
+
+        # even
+        if expr.lower() == 'even':
+            return sorted({(s, c) for s, c in all_pairs if c % 2 == 0})
+
+        # odd
+        if expr.lower() == 'odd':
+            return sorted({(s, c) for s, c in all_pairs if c % 2 == 1})
+
+        # "slot:12:even" / "slot:12:odd"
+        m = re.match(r'^slot[:\s]?(\d+)[:\s](even|odd)$', expr, re.IGNORECASE)
+        if m:
+            target = int(m.group(1))
+            parity = 0 if m.group(2).lower() == 'even' else 1
+            return sorted({(s, c) for s, c in all_pairs if s == target and c % 2 == parity})
+
+        # "slot:12" / "slot12" / "slot 12"
+        m = re.match(r'^slot[:\s]?(\d+)$', expr, re.IGNORECASE)
+        if m:
+            target = int(m.group(1))
+            return sorted({(s, c) for s, c in all_pairs if s == target})
+
+        # "11:3" 명시적 pair
+        m = re.match(r'^(\d+):(\d+)$', expr)
+        if m:
+            return [(int(m.group(1)), int(m.group(2)))]
+
+        # "N-M" ch 번호 범위 (전 슬롯)
+        m = re.match(r'^(\d+)-(\d+)$', expr)
+        if m:
+            lo, hi = int(m.group(1)), int(m.group(2))
+            return sorted({(s, c) for s, c in all_pairs if lo <= c <= hi})
+
+        # 쉼표 구분 목록: 순수 숫자들이면 ch 번호 목록, 아니면 이름/slot:ch
+        parts = [p.strip() for p in expr.split(',') if p.strip()]
+        if parts and all(re.match(r'^\d+$', p) for p in parts):
+            ch_set = {int(p) for p in parts}
+            return sorted({(s, c) for s, c in all_pairs if c in ch_set})
+
+        result = []
+        for part in parts:
+            result.extend(self._resolve_identifier(part, name_map, all_pairs))
         return sorted(set(result))
-    
+
+    # ===== 유틸 =====
+
     def _format_numeric(self, value: Any) -> str:
-        """숫자 포맷팅"""
         try:
             num = float(value)
             if abs(num - int(num)) < 1e-6:
                 return str(int(num))
-            return f"{num}"
+            return str(num)
         except (TypeError, ValueError):
             return str(value)
-    
+
     def __del__(self):
-        """소멸자: SSH 연결 종료"""
         if self.ssh_client:
             self.ssh_client.close()

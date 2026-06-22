@@ -1,17 +1,5 @@
 #!/usr/bin/env python3
-"""
-AgentRunner
------------
-Runs a specialized agent in a background thread.
-Bridges between the async FastAPI WebSocket and the blocking agent .run() call.
-
-input_queue  : WebSocket → agent  (user sends "완료" or free text)
-output_queue : agent → WebSocket  (AI messages, tool output, plots, status)
-adhoc_queue  : WebSocket → BrainAgent  (ad-hoc requests during scenario run)
-
-BrainAgent stays loaded at all times and handles ad-hoc requests in a
-separate thread, sharing output_queue with the scenario agent.
-"""
+"""AgentRunner — FastAPI WebSocket ↔ blocking agent .run() bridge."""
 
 import queue
 import threading
@@ -24,17 +12,10 @@ from agents.io_handler import WebSocketIO
 TOWER_ORDER = ["T1", "T2", "T3", "T6", "T5", "T4", "T7", "T8", "T9"]
 
 
-# ── Shared resource locks (hardware collision prevention) ────────────────────
-
 shared_locks = {
     "daq": threading.Lock(),
     "hv": threading.Lock(),
 }
-
-# ── Shared state (scenario agent writes, BrainAgent reads) ──────────────────
-# This dict is replaced wholesale when a scenario agent starts (pointing to
-# agent.state), and cleared when it stops.  BrainAgent reads it (no lock
-# needed for dict reads in CPython due to GIL).
 
 shared_state: dict = {}
 
@@ -45,10 +26,7 @@ def update_shared_state(updates: dict):
 
 
 def set_shared_state_ref(agent_state: dict):
-    """Replace shared_state contents with a live reference to agent.state fields.
-    Called once after agent creation so BrainAgent always sees current values.
-    Preserves runner-injected keys (agent_type, _output_queue) that downstream
-    tools rely on regardless of which sub-agent is currently active."""
+    """agent.state를 shared_state에 반영. runner 주입 키(agent_type, _output_queue)는 보존."""
     global shared_state
     preserved = {k: shared_state[k] for k in ("agent_type", "_output_queue")
                  if k in shared_state}
@@ -60,7 +38,6 @@ def set_shared_state_ref(agent_state: dict):
 
 
 def sync_shared_state():
-    """Copy key fields from the agent's state into shared_state."""
     ref = shared_state.get("_agent_state_ref")
     if ref is None:
         return
@@ -68,7 +45,6 @@ def sync_shared_state():
                 "phase", "current_energy_idx", "scan_order"):
         if key in ref:
             shared_state[key] = ref[key]
-    # Alias for BrainAgent convenience
     if "last_run_number" in ref:
         shared_state["current_run"] = ref["last_run_number"]
 
@@ -94,7 +70,6 @@ def run_agent_thread(
         # back to the browser without taking io_handler as a dependency.
         update_shared_state({"agent_type": agent_name, "_output_queue": output_queue})
 
-        # ── EM Scan ──────────────────────────────────────────────────────────
         if agent_name == "em_scan":
             from agents.energy_scan_agent import EnergyScanAgent
             agent = EnergyScanAgent(
@@ -103,7 +78,6 @@ def run_agent_thread(
                 io_handler=io,
             )
 
-        # ── Calibration Scan ─────────────────────────────────────────────────
         elif agent_name == "calib_scan":
             from agents.calib_scan_agent import CalibScanAgent
             agent = CalibScanAgent(
@@ -112,7 +86,6 @@ def run_agent_thread(
                 io_handler=io,
             )
 
-        # ── HV Equalization ──────────────────────────────────────────────────
         elif agent_name in ("hv_equalization", "hv_equalization_sim"):
             _HV_TOWER_ORDER = TOWER_ORDER  # T1-T9 전체 순회 (각 타워의 TxC/TxS 채널)
             _is_sim = (agent_name == "hv_equalization_sim")
@@ -208,7 +181,6 @@ def run_agent_thread(
             return
 
         set_shared_state_ref(agent.state)
-        # Periodic sync thread keeps shared_state fresh for BrainAgent
         _sync_stop = threading.Event()
         def _sync_loop():
             while not _sync_stop.is_set():
@@ -242,10 +214,6 @@ class StopAgentException(Exception):
 
 
 class AgentRunner:
-    """
-    Manages a single running scenario agent thread + a persistent BrainAgent
-    background thread for ad-hoc requests.
-    """
 
     def __init__(self):
         self.thread: Optional[threading.Thread] = None
@@ -273,7 +241,6 @@ class AgentRunner:
                 and self._brain_thread.is_alive())
 
     def start_brain(self, use_base_model: bool = False):
-        """Load BrainAgent and start its background thread."""
         if self.brain_ready:
             return
 
@@ -296,7 +263,6 @@ class AgentRunner:
         self._brain_thread.start()
 
     def stop_brain(self):
-        """Stop BrainAgent thread and unload model."""
         self._brain_stop.set()
         if self._brain_thread and self._brain_thread.is_alive():
             self._brain_thread.join(timeout=5)
@@ -305,15 +271,12 @@ class AgentRunner:
             self._brain_agent = None
 
     def send_adhoc(self, text: str):
-        """Send an ad-hoc request to BrainAgent."""
         self.adhoc_queue.put(text)
 
     def send_confirm(self, confirmed: bool):
-        """Send a Yes/No reply to BrainAgent's pending confirmation."""
         self.confirm_queue.put(confirmed)
 
     def send_clarify(self, text: str):
-        """Send a follow-up clarification answer to BrainAgent."""
         self.clarify_queue.put(text)
 
     def start(self, agent_name: str, params: dict):
@@ -341,7 +304,6 @@ class AgentRunner:
         self.input_queue.put(text)
 
     def stop(self):
-        """Create KILLME to stop any running DAQ, then signal the agent thread."""
         try:
             from tools.daq_tool import KILLME_FILE
             from pathlib import Path

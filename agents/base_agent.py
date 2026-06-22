@@ -1,20 +1,5 @@
 #!/usr/bin/env python3
-"""
-Base Agent
-----------
-Abstract base class shared by all scenario agents (EnergyScan, CalibScan, HVEqualization).
-
-Lifecycle:
-  with agent:           → load()  : load Qwen model onto MPS / CUDA / CPU
-    agent.run()         → subclass-defined experiment workflow
-                        → decide(context) : LLM inference → JSON parse → action
-  (exit with block)     → unload(): delete model & tokenizer, flush cache
-
-Subclasses must implement:
-  _get_system_prompt()   : step-by-step workflow instructions for the LLM
-  _build_state_context() : serialize current state dict into a prompt string
-  run()                  : conversation loop + tool execution logic
-"""
+"""Base Agent — abstract base class for all scenario agents (EnergyScan, CalibScan, HVEqualization)."""
 
 import json
 import time
@@ -41,23 +26,8 @@ class ToolFatalError(Exception):
 
 
 class BaseAgent(ABC):
-    """
-    모든 Agent의 기본 클래스
-    
-    Features:
-    - State 관리
-    - Conversation history 관리 (최근 N개)
-    - LLM 로드/언로드 (메모리 효율)
-    - Context 생성
-    """
-    
+
     def __init__(self, model_path: str, agent_name: str, io_handler=None):
-        """
-        Args:
-            model_path: Fine-tuned 모델 경로
-            agent_name: Agent 이름 (로깅용)
-            io_handler: IOHandler instance (None → TerminalIO)
-        """
         self.model_path = Path(model_path)
         self.agent_name = agent_name
 
@@ -74,22 +44,15 @@ class BaseAgent(ABC):
         self.conversation_history: List[Dict[str, Any]] = []
         self.max_history = MAX_CONVERSATION_HISTORY
     
-    # ===== Context Manager (자동 로드/언로드) =====
-    
     def __enter__(self):
-        """with 문 시작: 모델 로드"""
         self.load()
         return self
-    
+
     def __exit__(self, exc_type, exc_val, exc_tb):
-        """with 문 종료: 모델 언로드"""
         self.unload()
         return False
-    
-    # ===== 모델 관리 =====
-    
+
     def load(self):
-        """모델 로드"""
         if self.model is not None:
             return
         
@@ -110,6 +73,7 @@ class BaseAgent(ABC):
         
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
+        self.tokenizer.truncation_side = "left"
         
         self.model = AutoModelForCausalLM.from_pretrained(
             str(self.model_path),
@@ -119,9 +83,8 @@ class BaseAgent(ABC):
         )
         
         print(f"  ✅ [{self.agent_name}] 모델 로드 완료: {self.model_path}")
-    
+
     def unload(self):
-        """모델 언로드 (메모리 해제)"""
         if self.model is not None:
             del self.model
             self.model = None
@@ -136,11 +99,8 @@ class BaseAgent(ABC):
             torch.mps.empty_cache()
         
         print(f"  🗑️  [{self.agent_name}] 모델 언로드 완료")
-    
-    # ===== 대화 관리 =====
-    
+
     def add_to_history(self, role: str, content: str, metadata: Optional[Dict] = None):
-        """대화 히스토리에 추가"""
         entry = {
             "role": role,
             "content": content,
@@ -156,20 +116,15 @@ class BaseAgent(ABC):
             self.conversation_history = self.conversation_history[-self.max_history:]
     
     def get_recent_history(self, n: Optional[int] = None) -> List[Dict]:
-        """최근 N개 대화 반환"""
         if n is None:
             n = self.max_history
         return self.conversation_history[-n:]
     
-    # ===== Context 생성 =====
-    
     @abstractmethod
     def _build_state_context(self) -> str:
-        """State를 문자열로 변환 (각 Agent가 구현)"""
         pass
-    
+
     def _build_history_context(self) -> str:
-        """대화 히스토리를 문자열로 변환 (최근 대화 우선)"""
         if not self.conversation_history:
             return "(No conversation yet)"
         
@@ -185,9 +140,26 @@ class BaseAgent(ABC):
                     if "message" in decision:
                         content = decision["message"]
                     elif "tool" in decision:
-                        content = f"[Tool Call: {decision['tool']}]"
+                        tool = decision["tool"]
+                        params = decision.get("params", {})
+                        summary = f"[Tool Call: {tool}]"
+                        if tool in ("dqm_plot", "run_log") and params.get("run_number") or params.get("run_num"):
+                            run = params.get("run_number") or params.get("run_num")
+                            summary += f" run={run}"
+                        if tool == "dqm_plot" and params.get("type"):
+                            summary += f" type={params['type']}"
+                            if params.get("modules"):
+                                summary += f" modules={params['modules']}"
+                        if tool in ("hv_write", "hodoscope_hv_write"):
+                            cmd = params.get("command", "")
+                            ch = params.get("channels", "")
+                            v = params.get("voltage") or params.get("value", "")
+                            summary += f" cmd={cmd} ch={ch}" + (f" v={v}" if v != "" else "")
+                        if tool == "motor_move" and params.get("x") is not None:
+                            summary += f" x={params['x']}mm"
                         if "update_state" in decision:
-                            content += f" (Update State: {list(decision['update_state'].keys())})"
+                            summary += f" (Update State: {list(decision['update_state'].keys())})"
+                        content = summary
                 except:
                     pass
 
@@ -196,7 +168,6 @@ class BaseAgent(ABC):
         return "\n".join(lines)
     
     def build_full_context(self, current_input: Optional[str] = None) -> str:
-        """전체 context 생성"""
         parts = []
         
         parts.append("=== Current State ===")
@@ -218,14 +189,8 @@ class BaseAgent(ABC):
         
         return "\n".join(parts)
     
-    # ===== LLM 호출 =====
-    
     def decide(self, context: str, max_retries: int = 3) -> Dict[str, Any]:
-        """LLM에게 다음 행동 결정을 요청하고 JSON으로 반환.
-
-        JSON 파싱 실패 시 max_retries 만큼 자동 재시도. 첫 시도는 greedy
-        (do_sample=False), 재시도부터는 sampling on + 약간씩 다른 temperature
-        를 적용해 모델이 같은 실수를 반복하지 않도록 유도한다."""
+        """LLM inference → JSON. 첫 시도 greedy, 재시도 sampling."""
         if self.model is None:
             raise RuntimeError(f"[{self.agent_name}] Model not loaded. Use with statement or call load().")
 
@@ -293,24 +258,20 @@ class BaseAgent(ABC):
     
     @abstractmethod
     def _get_system_prompt(self) -> str:
-        """System prompt 반환 (Agent별로 구현)"""
         pass
-    
-    # ===== Tool params: state가 source of truth (LLM params 숫자는 실행 시 덮어씀) =====
+
+    # ── Tool params: LLM 출력 무시, state가 source of truth ──
 
     def _position_for_current_step(self) -> Optional[Dict[str, float]]:
-        """현재 스캔 단계의 위치 {x, y}. 타워/에너지마다 다를 수 있음 — 서브클래스가 구현."""
         return None
 
     def _motor_x_for_current_step(self) -> float:
-        """현재 단계 타워 위치의 X (LLM params['x'] 무시)."""
         pos = self._position_for_current_step()
         if pos is None:
             raise RuntimeError(f"[{self.agent_name}] _position_for_current_step() not implemented")
         return self._motor_x_from_state(pos["x"])
 
     def _motor_x_from_state(self, x_mm: float) -> float:
-        """모터 X 위치 — state/config 값만 사용."""
         return float(x_mm)
 
     def _apply_daq_params_from_state(
@@ -324,7 +285,6 @@ class BaseAgent(ABC):
         pos_rot: float = 0.0,
         pos_tilt: float = 0.0,
     ) -> None:
-        """DAQ params — update_state에 저장된 값으로 LLM 출력을 덮어씀."""
         if events is not None:
             params["events"] = events
         if beam_energy is not None:
@@ -341,7 +301,6 @@ class BaseAgent(ABC):
         params: Dict[str, Any],
         channel_values: Dict[str, float],
     ) -> None:
-        """hv_execute voltage — last_suggested 등 state 값으로 channel_values 고정."""
         params["channel_values"] = channel_values
 
     def _apply_hv_suggest_params_from_state(
@@ -353,7 +312,6 @@ class BaseAgent(ABC):
         hv_c: Optional[float] = None,
         hv_s: Optional[float] = None,
     ) -> None:
-        """hv_equalization_suggest — state에서 run/HV 주입 (LLM params 무시)."""
         params["tower"] = tower
         if run_number is not None:
             params["run_number"] = run_number
@@ -362,10 +320,7 @@ class BaseAgent(ABC):
         if hv_s is not None:
             params["hv_s"] = hv_s
 
-    # ===== DAQ run number =====
-
     def _extract_run_number(self, daq_output: Optional[str] = None) -> Optional[int]:
-        """DAQ 시작 시 확정된 run number (daq_tool 마커 / Run: 줄). runnum.txt 재읽기 없음."""
         from tools.daq_tool import parse_run_number_from_daq_output
 
         run_number = parse_run_number_from_daq_output(daq_output)
@@ -373,10 +328,7 @@ class BaseAgent(ABC):
             self.log("WARNING: DAQ output에서 run number를 찾지 못함")
         return run_number
 
-    # ===== Tool 재시도 =====
-
     def _run_tool_with_retry(self, tool_fn: Callable, tool_name: str, max_retries: int = 3) -> str:
-        """tool_fn을 최대 max_retries번 자동 재시도. 모두 실패하면 에러 표시 후 사용자 '다시 시도' 대기."""
         while True:
             last_error = None
             for attempt in range(1, max_retries + 1):
@@ -388,61 +340,33 @@ class BaseAgent(ABC):
                     if attempt < max_retries:
                         time.sleep(2)
             self.io.send_tool_error(tool_name, str(last_error), max_retries)
-            action = self.io.wait_for_retry()  # blocks until retry or skip
+            action = self.io.wait_for_retry()
             if action == "skip":
                 return f"[SKIPPED] {tool_name} 건너뜀 (사용자 요청)"
-
-    # ===== 로깅 =====
-    # stdout only — no file I/O
 
     def log(self, message: str):
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         print(f"[{timestamp}] [{self.agent_name}] {message}", flush=True)
     
-    # ===== 통합 실행 루프 (모든 시나리오 Agent 공용) =====
-    #
-    # 설계 원칙 — "code-authoritative bookkeeping":
-    #   드라이버(이 루프)가 위치/확인/진행 상태(x_moved, y_confirmed, plot 확인,
-    #   완료 표시, 종료)를 모두 소유한다. LLM은 message와 tool 호출만 결정한다.
-    #   덕분에 "LLM이 완료/확인 플래그를 빠뜨려서" 생기던 무한 루프·조기 완료가
-    #   구조적으로 사라진다. 각 Agent는 아래 hook만 구현하면 된다.
-
-    # ---- Hooks (서브클래스가 필요 시 override) ----
+    # ── Run loop hooks (서브클래스가 필요 시 override) ──
 
     def _print_banner(self):
         print(f"\n{'='*70}\n⚡ {self.agent_name} Started\n{'='*70}")
 
-    def _pre_iteration(self):
-        """매 루프 시작에서 호출. 다음 작업 항목으로의 자동 전환 등."""
-        pass
-
-    def _is_complete(self) -> bool:
-        """모든 작업이 끝났으면 True. True면 완료 메시지 후 루프 종료 → 모델 unload."""
-        return bool(self.state.get("done"))
-
-    def _completion_message(self) -> Optional[str]:
-        """완료 시 사용자에게 보낼 메시지 (None이면 생략)."""
-        return None
-
-    def _completed_count(self) -> int:
-        """완료된 작업 항목 수 (진행 메시지 트리거 감지용)."""
-        return 0
-
-    def _progress_message(self) -> Optional[str]:
-        """작업 항목 하나가 완료될 때 보낼 진행 요약 (None이면 생략)."""
-        return None
-
-    def _on_user_input(self, user_input: str):
-        """사용자 응답 직후 호출. 현재 단계에 맞는 확인 플래그를 코드가 직접 설정.
-        LLM의 update_state에 의존하지 않는다."""
-        pass
+    def _pre_iteration(self): pass
+    def _is_complete(self) -> bool: return bool(self.state.get("done"))
+    def _completion_message(self) -> Optional[str]: return None
+    def _completed_count(self) -> int: return 0
+    def _progress_message(self) -> Optional[str]: return None
+    def _on_user_input(self, user_input: str): pass
 
     def _guard_tool(self, tool_name: str, decision: Dict[str, Any]) -> Optional[str]:
-        """tool 실행 전 가드. 거부 사유 문자열을 반환하면 실행을 막고
-        그 문자열을 user 메시지로 히스토리에 넣어 재시도시킨다. None이면 통과."""
+        """거부 사유 반환 → 실행 차단 후 재시도. None이면 통과."""
         return None
 
-    # ---- 공용 메인 루프 ----
+    def _guard_ai_message(self, message: str) -> Optional[str]:
+        """거부 사유 반환 → 출력 차단 후 재시도. None이면 통과."""
+        return None
 
     def run(self):
         self._print_banner()
@@ -458,7 +382,6 @@ class BaseAgent(ABC):
             try:
                 self._pre_iteration()
 
-                # 모든 작업 완료 → 완료 메시지 후 종료 (with 블록 빠져나가며 unload)
                 if self._is_complete():
                     msg = self._completion_message()
                     if msg:
@@ -467,8 +390,7 @@ class BaseAgent(ABC):
 
                 context = self.build_full_context()
                 decision = self.decide(context)
-                print(f"\n🔍 Agent Decision:")
-                print(json.dumps(decision, indent=2, ensure_ascii=False))
+                print(f"\n🔍 Decision: {json.dumps(decision, ensure_ascii=False)}")
 
                 if "error" in decision:
                     _error_count += 1
@@ -494,12 +416,17 @@ class BaseAgent(ABC):
                 tool_name = decision.get("tool")
 
                 if message:
+                    rejection = self._guard_ai_message(message)
+                    if rejection:
+                        self.log(f"message guard blocked: {rejection}")
+                        self.add_to_history("assistant", json.dumps(decision, ensure_ascii=False))
+                        self.add_to_history("user", rejection)
+                        continue
                     self.io.send_ai_message(message)
                     self.add_to_history("assistant", json.dumps(decision, ensure_ascii=False))
                     user_input = self.io.get_input()
                     if user_input in ["종료", "exit"]:
                         break
-                    # 확인/완료 처리는 코드가 소유 (LLM update_state에 의존하지 않음)
                     before = self._completed_count()
                     self._on_user_input(user_input)
                     after = self._completed_count()
@@ -513,13 +440,10 @@ class BaseAgent(ABC):
                 if tool_name and tool_name != "none":
                     rejection = self._guard_tool(tool_name, decision)
                     if rejection:
-                        self.log(f"tool 가드 차단 ({tool_name}): {rejection}")
                         self.add_to_history("assistant", json.dumps(decision, ensure_ascii=False))
                         self.add_to_history("user", rejection)
                         continue
-                    print(f"\n🤖 Executing Tool: {tool_name}")
                     result = self._execute_tool(tool_name, decision.get("params", {}))
-                    print(f"📝 Tool Result: {str(result)[:200]}...")
                     self.add_to_history("assistant", json.dumps(decision, ensure_ascii=False))
                     if self.state.get("done"):
                         break
@@ -544,9 +468,6 @@ class BaseAgent(ABC):
                 _tb.print_exc()
                 break
 
-    # ===== 추상 메서드 =====
-
     @abstractmethod
     def _execute_tool(self, tool_name: str, params: Dict) -> str:
-        """Tool 실행 (각 Agent가 구현)"""
         pass

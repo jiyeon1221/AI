@@ -14,13 +14,18 @@ HVEqualizationAgent(hv_equalization_agent.py)와 완전히 동일하도록 유�
 import json
 import random
 import math
+import sys
 from pathlib import Path
 from typing import List, Dict, Any, Optional
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from config import MSG_PLOT_CONFIRM, MSG_HV_CONFIRM
 
 TOWER_ORDER = ["T1", "T2", "T3", "T6", "T5", "T4", "T7", "T8", "T9"]
 
 MESSAGE_Y_MOVE_REQ   = "X축 자동 이동 완료 ({x:.3f} mm). Y축을 {y:.3f}으로 이동해주세요."
-MESSAGE_HV_CONFIRM   = "HV 전압이 변경되었습니다. 결과를 확인하고 '완료'를 입력하면 다음 DAQ를 시작합니다."
+MESSAGE_PLOT_CONFIRM = MSG_PLOT_CONFIRM
+MESSAGE_HV_CONFIRM   = MSG_HV_CONFIRM
 # {c}/{s}: 타워별 채널명 (예: T5C/T5S). 호출부에서 c=f"{tower}C", s=f"{tower}S" 전달.
 MESSAGE_APPROVE_BOTH = "분석 결과, 현재 ADC: {c}={adc_c:.1f}, {s}={adc_s:.1f} (목표: {target}). HV 변경 제안: {c} {hv_c_old}V→{hv_c_new}V, {s} {hv_s_old}V→{hv_s_new}V. 적용하시겠습니까?"
 MESSAGE_APPROVE_C    = "분석 결과, 현재 ADC: {c}={adc_c:.1f} (목표: {target}). HV 변경 제안: {c} {hv_c_old}V→{hv_c_new}V. ({s} 완료) 적용하시겠습니까?"
@@ -28,7 +33,7 @@ MESSAGE_APPROVE_S    = "분석 결과, 현재 ADC: {s}={adc_s:.1f} (목표: {tar
 
 
 def random_events() -> int:
-    digits = random.randint(3, 5)
+    digits = random.randint(3, 6)
     return random.randint(10 ** (digits - 1), 10 ** digits - 1)
 
 
@@ -54,7 +59,10 @@ The SYSTEM marks Y-axis confirmed automatically — do NOT output any state upda
 [INNER LOOP — repeat 1c→1g until CONVERGED]
 1c. Execute DAQ:
   {{"tool": "daq_run_tool", "params": {{"events": <events>, "pos_h": <x>, "pos_v": <y>, "beam_energy": <energy>}}}}
-  (Plot is auto-rendered by DQM live during DAQ — never call any plot tool.)
+
+1c-plot. Show plot confirmation (IMMEDIATELY after DAQ, before suggest):
+  {{"message": "데이터 수집 및 Plot 생성이 완료되었습니다. 결과를 확인해주세요."}}
+  Wait for user 완료 — the SYSTEM then sets needs_suggest=True automatically.
 
 1d. Suggest HV:
   {{"tool": "hv_equalization_suggest", "params": {{"run_number": <run>, "tower": "{t}"}}}}
@@ -74,7 +82,7 @@ After user says "완료":
   NEVER include a done channel in channel_values.
 
 1g. Confirmation:
-  {{"message": "HV 전압이 변경되었습니다. 결과를 확인하고 '완료'를 입력하면 다음 DAQ를 시작합니다."}}
+  {{"message": "전압이 변경되었습니다. 확인 후 '완료'를 눌러주세요."}}
 
 After user says "완료":
   - State shows NOT CONVERGED → back to step 1c
@@ -112,8 +120,12 @@ def _build_state_context(state: Dict) -> str:
             lines.append(f"*** REQUIRED NEXT: hv_execute_tool status (step 1b) — Y-axis confirmed, check HV now ***")
         lines.append("")
 
-    if state.get("needs_suggest"):
-        lines.append(f"*** REQUIRED NEXT: hv_equalization_suggest (step 1d) — DAQ run {state.get('last_run_number')} complete, analyze NOW ***")
+    if state.get("needs_plot_confirm"):
+        lines.append(f"*** REQUIRED NEXT: plot confirmation message (step 1c-plot) — DAQ done, send plot confirm BEFORE suggest ***")
+        lines.append(f'*** output: {{"message": "{MSG_PLOT_CONFIRM}"}} ***')
+        lines.append("")
+    elif state.get("needs_suggest"):
+        lines.append(f"*** REQUIRED NEXT: hv_equalization_suggest (step 1d) — plot confirmed, analyze NOW ***")
         lines.append(f"*** DO NOT call daq_run_tool again — call hv_equalization_suggest first ***")
         lines.append("")
     elif adc_known:
@@ -141,6 +153,7 @@ def _build_state_context(state: Dict) -> str:
     lines.append(f"Target Events: {state.get('target_events')}")
     lines.append(f"Target ADC: {state.get('target_adc_c')}")
     lines.append(f"Last HV: C={state.get('last_hv_c')}V, S={state.get('last_hv_s')}V")
+    lines.append(f"needs_plot_confirm: {state.get('needs_plot_confirm', False)}")
     if state.get("last_suggested_hv_c") is not None:
         dc = state.get("channel_done_c", False)
         ds = state.get("channel_done_s", False)
@@ -185,8 +198,10 @@ def _get_step_hint(state: Dict) -> str:
         return f"{base} | REQUIRED NEXT: hv_execute_tool voltage (step 1f — user already confirmed)"
     elif adc_known and suggest_pending:
         return f"{base} | REQUIRED NEXT: approval message (step 1e)"
+    elif state.get("needs_plot_confirm"):
+        return f"{base} | REQUIRED NEXT: plot confirmation message (step 1c-plot — DAQ done, send plot confirm before suggest)"
     elif state.get("needs_suggest"):
-        return f"{base} | REQUIRED NEXT: hv_equalization_suggest (step 1d — DAQ done, analyze now)"
+        return f"{base} | REQUIRED NEXT: hv_equalization_suggest (step 1d — plot confirmed, analyze now)"
     elif adc_known:
         return f"{base} | REQUIRED NEXT: daq_run_tool (step 1c)"
     else:
@@ -355,6 +370,7 @@ def generate_workflow(tower: str, x: float, y: float,
         "done": False,
         "y_confirmed": False,
         "needs_suggest": False,
+        "needs_plot_confirm": False,
     }
 
     # start_iter > 0: 이미 완료된 반복을 히스토리에 압축
@@ -373,6 +389,9 @@ def generate_workflow(tower: str, x: float, y: float,
                 history.append({"role": "assistant", "content": json.dumps(
                     {"tool": "daq_run_tool", "params": {"events": events, "pos_h": x, "pos_v": y, "beam_energy": energy}},
                     ensure_ascii=False)})
+                history.append({"role": "assistant", "content": json.dumps(
+                    {"message": MESSAGE_PLOT_CONFIRM}, ensure_ascii=False)})
+                history.append({"role": "user", "content": "완료"})
                 history.append({"role": "assistant", "content": json.dumps(
                     {"tool": "hv_equalization_suggest", "params": {"run_number": run_number, "tower": tower}},
                     ensure_ascii=False)})
@@ -451,7 +470,16 @@ def generate_workflow(tower: str, x: float, y: float,
         history.append({"role": "assistant", "content": json.dumps(dec, ensure_ascii=False)})
         state["last_run_number"] = run_number
         state["iterations"] = (state.get("iterations") or 0) + 1
-        state["needs_suggest"] = True  # DAQ 완료 → suggest 필요
+        state["needs_suggest"] = False
+        state["needs_plot_confirm"] = True   # DAQ 완료 → 먼저 plot 확인
+
+        # 1c-plot: plot confirmation message
+        dec = {"message": MESSAGE_PLOT_CONFIRM}
+        examples.append(make_example(state, history, dec))
+        history.append({"role": "assistant", "content": json.dumps(dec, ensure_ascii=False)})
+        history.append({"role": "user", "content": "완료"})
+        state["needs_plot_confirm"] = False
+        state["needs_suggest"] = True        # plot 확인 완료 → suggest 진행
 
         # 1d: Suggest
         dec = {"tool": "hv_equalization_suggest", "params": {"run_number": run_number, "tower": tower}}
@@ -566,6 +594,7 @@ def generate_manual_adjust_workflow(tower: str, x: float, y: float,
         "iterations": 1,
         "done": False,
         "needs_suggest": False,
+        "needs_plot_confirm": False,
     }
 
     # Build partial history: motor, Y-move, status, DAQ, suggest already done
@@ -589,6 +618,9 @@ def generate_manual_adjust_workflow(tower: str, x: float, y: float,
     history.append({"role": "assistant", "content": json.dumps(
         {"tool": "daq_run_tool", "params": {"events": events, "pos_h": x, "pos_v": y, "beam_energy": energy}},
         ensure_ascii=False)})
+    history.append({"role": "assistant", "content": json.dumps(
+        {"message": MESSAGE_PLOT_CONFIRM}, ensure_ascii=False)})
+    history.append({"role": "user", "content": "완료"})
     history.append({"role": "assistant", "content": json.dumps(
         {"tool": "hv_equalization_suggest", "params": {"run_number": run_number, "tower": tower}},
         ensure_ascii=False)})

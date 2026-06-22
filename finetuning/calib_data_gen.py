@@ -14,15 +14,19 @@ CalibScanAgent와 완전히 동일하도록 유지.
 
 import json
 import random
+import sys
 from pathlib import Path
 from typing import List, Dict, Any, Optional
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from config import MSG_PLOT_CONFIRM
 
 TOWER_ORDER = ["T1", "T2", "T3", "T6", "T5", "T4", "T7", "T8", "T9"]
 
 MESSAGE_ENERGY_REQ = "에너지를 입력하세요."
 MESSAGE_EVENTS_REQ = "이벤트를 몇개 받을까요?"
 MESSAGE_Y_MOVE_REQ = "X축 자동 이동 완료 ({x:.3f} mm). Y축을 {y:.3f}으로 이동해주세요."
-MESSAGE_PLOT_CONFIRM = "데이터 수집 및 Plot 생성이 완료되었습니다. 결과를 확인해주세요."
+MESSAGE_PLOT_CONFIRM = MSG_PLOT_CONFIRM
 
 SYSTEM_PROMPT = """You are Calibration Scan Agent for test beam experiments.
 
@@ -86,7 +90,7 @@ When ALL towers are completed, the SYSTEM sends the completion message and ends 
 
 
 def random_events():
-    digits = random.randint(3, 5)
+    digits = random.randint(3, 6)
     return random.randint(10 ** (digits - 1), 10 ** digits - 1)
 
 
@@ -95,6 +99,7 @@ def _build_state_context(state: Dict, tower_positions: Dict) -> str:
     lines.append(f"Phase: {state['phase']}")
     lines.append(f"Beam Energy: {state['beam_energy']} GeV")
     lines.append(f"Target Events: {state['target_events']}")
+    lines.append(f"needs_plot_confirm: {state.get('needs_plot_confirm', False)}")
     lines.append("")
     lines.append("Tower Progress:")
     for i, tower in enumerate(TOWER_ORDER):
@@ -168,8 +173,9 @@ def _get_step_hint(state: Dict, history: List[Dict]) -> str:
             last_run = status["runs"][-1]
             return (f"Phase: {phase} | Tower: {tower} ({tower_idx+1}/{total}) | "
                     f"DAQ done (Run {last_run}) — REQUIRED NEXT: plot confirmation message (step 1c). "
-                    f"DO NOT call daq_run_tool again. 완료 시 시스템이 자동으로 완료 처리한다.")
-        return f"Phase: {phase} | Tower: {tower} ({tower_idx+1}/{total})"
+                    f"DO NOT call daq_run_tool or motor_x_move_tool. 완료 시 시스템이 자동으로 완료 처리한다.")
+        return (f"Phase: {phase} | Tower: {tower} ({tower_idx+1}/{total}) | "
+                f"needs_plot_confirm=False — DO NOT call any tool or send plot confirmation.")
     return f"Phase: {phase} | All towers completed — system will terminate automatically"
 
 

@@ -104,41 +104,33 @@
   .hidden { display: none; }
 
   /* ── Edit mode ── */
-  colgroup .col-sel { width: 32px; }
-  thead th.col-sel { text-align: center; }
-  tbody td.col-sel { text-align: center; padding: 4px; }
-  tbody td.col-sel input[type=checkbox] { cursor: pointer; accent-color: #4f8ef7; }
-  tbody td.v0set-cell { cursor: pointer; position: relative; }
+  /* V0Set cell — editable in edit mode */
+  tbody td.v0set-cell {
+    cursor: pointer; position: relative; outline: none;
+  }
   tbody td.v0set-cell:hover { background: #252840; }
+  tbody td.v0set-cell:focus {
+    background: #1e2850;
+    box-shadow: inset 0 0 0 1px #4f8ef7;
+  }
+  tbody td.v0set-cell::after {
+    content: ' ✎'; font-size: 10px; color: #4f8ef780; font-style: normal;
+  }
   tbody td.v0set-cell input.inline-edit {
     width: 72px; background: #1a1d27; color: #fff;
     border: 1px solid #4f8ef7; border-radius: 3px;
     padding: 1px 4px; font-size: 12px; font-family: inherit;
     text-align: right;
   }
+  /* Status cell — clickable for on/off in edit mode */
+  tbody td.status-edit { cursor: pointer; outline: none; }
+  tbody td.status-edit:hover .badge { opacity: 0.75; }
+  tbody td.status-edit:focus { box-shadow: inset 0 0 0 1px #4f8ef7; }
 
-  /* ── Control panel ── */
-  #ctrl-panel {
-    display: none;
-    margin-top: 12px; padding: 12px 14px;
-    background: #1a1d27; border: 1px solid #2c2f3e; border-radius: 6px;
-  }
-  #ctrl-panel.visible { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-  #ctrl-panel label { font-size: 12px; color: #9ca0b8; }
-  #ctrl-panel input#bulk-voltage {
-    width: 80px; background: #0f1117; color: #dde1f0;
-    border: 1px solid #3a4159; border-radius: 4px;
-    padding: 4px 8px; font-size: 12px;
-  }
-  #sel-count { font-size: 12px; color: #4f8ef7; min-width: 80px; }
-  #ctrl-panel button { padding: 5px 14px; font-size: 12px; }
-  #ctrl-panel button.btn-apply  { background: #1e3a6e; border-color: #4f8ef7; color: #4f8ef7; }
-  #ctrl-panel button.btn-apply:hover  { background: #2a4f9e; color: #fff; }
-  #ctrl-panel button.btn-on    { background: #1a3a1a; border-color: #4caf50; color: #4caf50; }
-  #ctrl-panel button.btn-on:hover    { background: #2a5a2a; color: #fff; }
-  #ctrl-panel button.btn-off   { background: #3a1a1a; border-color: #ef5350; color: #ef5350; }
-  #ctrl-panel button.btn-off:hover   { background: #5a2a2a; color: #fff; }
-  #ctrl-panel button.btn-clear { background: #23273a; border-color: #3a4159; color: #7a7f99; }
+  /* ── Row keyboard-focus highlight ── */
+  tbody tr:focus-within { background: #1a2240 !important; }
+  tbody tr.trip-row:focus-within { background: #3a1020 !important; }
+
 
   /* ── Confirm modal ── */
   #modal-overlay {
@@ -167,16 +159,56 @@
   }
   #toast.ok    { border-color: #4caf50; color: #4caf50; }
   #toast.error { border-color: #ef5350; color: #ef5350; }
+
+  /* ── Trip Alert Banner ── */
+  #trip-banner {
+    display: none; position: fixed; top: 0; left: 0; right: 0; z-index: 999;
+    background: #7a0000; border-bottom: 3px solid #ff1744;
+    animation: trip-pulse 0.9s ease-in-out infinite;
+  }
+  #trip-banner.visible { display: block; }
+  #trip-banner-inner {
+    display: flex; align-items: center; gap: 16px; padding: 14px 20px;
+  }
+  #trip-banner-icon { font-size: 22px; flex-shrink: 0; }
+  #trip-banner-label {
+    font-size: 14px; font-weight: 800; color: #ff4444;
+    letter-spacing: 2px; text-transform: uppercase; flex-shrink: 0;
+  }
+  #trip-banner-channels {
+    flex: 1; font-size: 13px; color: #ffcdd2;
+    font-family: 'SF Mono','Fira Code',monospace;
+  }
+  #trip-banner-close {
+    flex-shrink: 0; background: transparent; border: 1px solid #ff5252;
+    color: #ff5252; font-size: 12px; cursor: pointer;
+    padding: 4px 12px; border-radius: 3px;
+  }
+  #trip-banner-close:hover { background: #ff1744; color: #fff; border-color: #ff1744; }
+  @keyframes trip-pulse {
+    0%, 100% { background: #7a0000; box-shadow: 0 3px 18px rgba(255,23,68,0.35); }
+    50%       { background: #b71c1c; box-shadow: 0 3px 28px rgba(255,23,68,0.75); }
+  }
 </style>
 </head>
 <body>
+
+<!-- Trip Alert Banner -->
+<div id="trip-banner">
+  <div id="trip-banner-inner">
+    <span id="trip-banner-icon">⚡</span>
+    <span id="trip-banner-label"></span>
+    <span id="trip-banner-channels"></span>
+    <button id="trip-banner-close">닫기 ✕</button>
+  </div>
+</div>
+
 <div id="top">
   <div id="top-left">
     <img src="/static/DREAM_LOGO.png" alt="DREAM" />
     <span id="top-title">HV Status · All Channels</span>
   </div>
   <div id="top-right">
-    <button id="edit-btn">편집 모드</button>
     <button id="view-btn">Raw 보기</button>
     <button id="expert-btn">전문가모드: 꺼짐</button>
     <button id="refresh-btn">새로고침</button>
@@ -187,17 +219,16 @@
 
 <div id="content">
   <div id="msg">로딩 중...</div>
-  <div id="tbl-wrap" style="display:none">
+<div id="tbl-wrap" style="display:none">
     <table id="hv-table">
       <colgroup>
-        <col class="col-sel hidden" /><col class="col-ch" /><col class="col-name" /><col class="col-status" />
+        <col class="col-ch" /><col class="col-name" /><col class="col-status" />
         <col class="col-num" /><col class="col-num" />
         <col class="col-num" /><col class="col-num" />
         <col class="col-exp" /><col class="col-exp" /><col class="col-exp" />
       </colgroup>
       <thead>
         <tr>
-          <th class="col-sel hidden"><input type="checkbox" id="chk-all" title="전체 선택" /></th>
           <th>Ch</th><th>Name</th><th>Status</th>
           <th>VMon (V)</th><th>IMon (uA)</th>
           <th>V0Set (V)</th><th>I0Set (uA)</th>
@@ -209,17 +240,7 @@
       <tbody id="hv-tbody"></tbody>
     </table>
   </div>
-  <div id="ctrl-panel">
-    <span id="sel-count">0개 선택됨</span>
-    <label>전압(V) <input type="number" id="bulk-voltage" step="1" min="0" max="2000" placeholder="예: 1500" /></label>
-    <button class="btn-apply" id="btn-apply-v">전압 적용</button>
-    <button class="btn-on"    id="btn-on">On</button>
-    <button class="btn-off"   id="btn-off">Off</button>
-    <button class="btn-clear" id="btn-clear-sel">선택 해제</button>
-  </div>
   <pre id="raw" style="display:none"></pre>
-
-  <!-- Edit control panel is above (inside tbl-wrap flow) -->
 
   <!-- Hodoscope HV card -->
   <div id="hodo-card" style="
@@ -260,15 +281,6 @@ const autoBtn    = document.getElementById('auto-btn');
 const expertBtn  = document.getElementById('expert-btn');
 const refreshBtn = document.getElementById('refresh-btn');
 const viewBtn    = document.getElementById('view-btn');
-const editBtn    = document.getElementById('edit-btn');
-const ctrlPanel  = document.getElementById('ctrl-panel');
-const selCount   = document.getElementById('sel-count');
-const chkAll     = document.getElementById('chk-all');
-const bulkVolt   = document.getElementById('bulk-voltage');
-const btnApplyV  = document.getElementById('btn-apply-v');
-const btnOn      = document.getElementById('btn-on');
-const btnOff     = document.getElementById('btn-off');
-const btnClear   = document.getElementById('btn-clear-sel');
 const modalOverlay = document.getElementById('modal-overlay');
 const modalBody    = document.getElementById('modal-body');
 const modalConfirm = document.getElementById('modal-confirm');
@@ -277,14 +289,41 @@ const toastEl      = document.getElementById('toast');
 
 let timerAuto = null;
 const AUTO_CHOICES = [1000, 2000, 5000]; // 1s / 2s / 5s
-let autoIdx = 1; // default: 2000ms
+let autoIdx = 0; // default: 1000ms
 let autoMs = AUTO_CHOICES[autoIdx];
 let showRaw = false;
 let lastRaw = '';
 let lastRows = null;
 let expertMode = false;
-let editMode = false;
-let pendingAction = null; // { command, channels, voltage? }
+const isTrip    = s => s === 'trip' || s.includes('trip');
+const KNOWN_ST  = new Set(['on', 'off', 'up', 'down']);
+// + 기준으로 분리 후 KNOWN_ST 에 없는 부분이 하나라도 있으면 alert
+const isAlertSt = s => s.split('+').map(c => c.trim().toLowerCase()).some(c => c !== '' && !KNOWN_ST.has(c));
+// alert 조건만 추출 (KNOWN_ST 제외)
+const alertParts = s => s.split('+').map(c => c.trim()).filter(c => c !== '' && !KNOWN_ST.has(c.toLowerCase()));
+const editMode = true;   // 항상 편집 가능
+let pendingAction = null;
+
+/* ── Keyboard navigation state ── */
+let focusedRowIdx = -1;
+let focusedColKey = 'v0set'; // 'status' | 'v0set' | 'i0set'
+const COL_TD_IDX = { name: 1, status: 2, v0set: 5, i0set: 6, rup: 7, rdown: 8, vmax: 9 };
+// 좌우 화살표로 이동할 컬럼 순서 (모드별)
+const COL_NAV_NORMAL = ['name', 'status', 'v0set', 'i0set'];
+const COL_NAV_EXPERT = ['name', 'status', 'v0set', 'i0set', 'rup', 'rdown', 'vmax'];
+
+function focusCell(rowIdx, colKey) {
+  if (!editMode || !lastRows) return;
+  const trs = tbody.querySelectorAll('tr');
+  if (!trs.length) return;
+  rowIdx = Math.max(0, Math.min(rowIdx, trs.length - 1));
+  const td = trs[rowIdx].cells[COL_TD_IDX[colKey]];
+  if (!td || td.tabIndex < 0) return;
+  focusedRowIdx = rowIdx;
+  focusedColKey = colKey;
+  td.focus({ preventScroll: false });
+  td.scrollIntoView({ block: 'nearest' });
+}
 
 /* ── Toast helper ── */
 let toastTimer = null;
@@ -312,82 +351,106 @@ modalCancel.addEventListener('click', () => {
 });
 
 /* ── HV API call ── */
-async function applyHV(command, channels, voltage) {
+let _cmdInFlight = false;  // 명령 실행 중 → auto-refresh 건너뜀
+
+// 명령 완료 후 갱신은 자동 갱신 인터벌에 맡김 (별도 타이머 없음)
+function scheduleRefresh() { /* no-op: setInterval이 다음 틱에 자동 갱신 */ }
+
+async function _sendHV(command, channels, value) {
+  const body = { command, channels };
+  if (command === 'voltage') body.voltage = value;
+  if (command === 'i0set')   body.current = value;
+  if (command === 'svmax')   body.svmax   = value;
+  if (command === 'rup')     body.rup     = value;
+  if (command === 'rdown')   body.rdown   = value;
+  if (command === 'name')    body.name    = value;
+  const res = await fetch('/api/hv/set', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json();
+  if (!res.ok || data.ok === false) throw new Error(data.error || `HTTP ${res.status}`);
+}
+
+/* ── On/Off 배칭: 300ms 안에 들어온 명령을 모아 SSH 1번으로 처리 ── */
+const _onOffBatch = { on: new Set(), off: new Set() };
+let _batchTimer = null;
+
+async function _flushOnOff() {
+  _batchTimer = null;
+  const toOn  = [..._onOffBatch.on];
+  const toOff = [..._onOffBatch.off];
+  _onOffBatch.on.clear();
+  _onOffBatch.off.clear();
+  _cmdInFlight = true;
   try {
-    const body = { command, channels };
-    if (command === 'voltage') body.voltage = voltage;
-    const res = await fetch('/api/hv/set', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    const data = await res.json();
-    if (!res.ok || data.ok === false) throw new Error(data.error || `HTTP ${res.status}`);
-    showToast(`✓ 완료: ${command} ${Array.isArray(channels) ? channels.join(',') : channels}`, 'ok');
-    setTimeout(loadStatus, 1500);
+    if (toOff.length) await _sendHV('off', toOff);
+    if (toOn.length)  await _sendHV('on',  toOn);
+    showToast(`✓ ${toOff.length ? 'off ' + toOff.join(',') : ''}${toOn.length ? '  on ' + toOn.join(',') : ''}`.trim(), 'ok');
+    scheduleRefresh();
   } catch (e) {
     showToast(`✗ 오류: ${e.message}`, 'error');
+  } finally {
+    _cmdInFlight = false;
   }
 }
 
-/* ── Edit mode ── */
-function getCheckedNames() {
-  return Array.from(tbody.querySelectorAll('td.col-sel input[type=checkbox]:checked'))
-    .map(c => c.dataset.name)
-    .filter(Boolean);
-}
-function updateSelCount() {
-  const n = getCheckedNames().length;
-  selCount.textContent = `${n}개 선택됨`;
-  if (n > 0) ctrlPanel.classList.add('visible');
-  else ctrlPanel.classList.remove('visible');
-}
-chkAll.addEventListener('change', () => {
-  tbody.querySelectorAll('td.col-sel input[type=checkbox]')
-    .forEach(c => { c.checked = chkAll.checked; });
-  updateSelCount();
-});
-btnClear.addEventListener('click', () => {
-  tbody.querySelectorAll('td.col-sel input[type=checkbox]').forEach(c => { c.checked = false; });
-  chkAll.checked = false;
-  updateSelCount();
-});
-btnApplyV.addEventListener('click', () => {
-  const names = getCheckedNames();
-  if (!names.length) { showToast('채널을 선택해주세요', 'error'); return; }
-  const v = parseFloat(bulkVolt.value);
-  if (isNaN(v)) { showToast('전압을 입력해주세요', 'error'); return; }
-  showConfirm(
-    `${names.length}개 채널 (${names.slice(0,5).join(', ')}${names.length > 5 ? '...' : ''}) 전압을 ${v}V로 변경하시겠습니까?`,
-    () => applyHV('voltage', names, v)
-  );
-});
-btnOn.addEventListener('click', () => {
-  const names = getCheckedNames();
-  if (!names.length) { showToast('채널을 선택해주세요', 'error'); return; }
-  showConfirm(
-    `${names.length}개 채널을 켜시겠습니까?\n(${names.slice(0,5).join(', ')}${names.length > 5 ? '...' : ''})`,
-    () => applyHV('on', names)
-  );
-});
-btnOff.addEventListener('click', () => {
-  const names = getCheckedNames();
-  if (!names.length) { showToast('채널을 선택해주세요', 'error'); return; }
-  showConfirm(
-    `${names.length}개 채널을 끄시겠습니까?\n(${names.slice(0,5).join(', ')}${names.length > 5 ? '...' : ''})`,
-    () => applyHV('off', names)
-  );
-});
-editBtn.addEventListener('click', () => {
-  editMode = !editMode;
-  editBtn.textContent = editMode ? '편집 종료' : '편집 모드';
-  editBtn.classList.toggle('active', editMode);
-  document.querySelectorAll('.col-sel').forEach(el => el.classList.toggle('hidden', !editMode));
-  if (!editMode) {
-    chkAll.checked = false;
-    ctrlPanel.classList.remove('visible');
+async function applyHV(command, channels, value) {
+  if (command === 'on' || command === 'off') {
+    const opposite = command === 'on' ? 'off' : 'on';
+    channels.forEach(ch => { _onOffBatch[opposite].delete(ch); _onOffBatch[command].add(ch); });
+    if (_batchTimer) clearTimeout(_batchTimer);
+    _batchTimer = setTimeout(_flushOnOff, 300);
+    return;
   }
-  if (lastRows) renderTable(lastRows);
+  // voltage / i0set: 즉시 전송
+  _cmdInFlight = true;
+  try {
+    await _sendHV(command, channels, value);
+    showToast(`✓ ${command} ${Array.isArray(channels) ? channels.join(',') : channels}`, 'ok');
+    scheduleRefresh();
+  } catch (e) {
+    showToast(`✗ 오류: ${e.message}`, 'error');
+  } finally {
+    _cmdInFlight = false;
+  }
+}
+
+/* ── Global keyboard navigation ── */
+document.addEventListener('keydown', e => {
+  const inp = document.querySelector('input.inline-edit');
+
+  // 위/아래 화살표: 행 이동 (편집 중에도 동작 — 현재 편집 먼저 커밋)
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    // 편집 중이면 inline input keydown에서 처리 (중복 방지)
+    if (inp) return;
+    e.preventDefault();
+    if (focusedRowIdx < 0) { focusCell(0, focusedColKey); return; }
+    focusCell(focusedRowIdx + (e.key === 'ArrowDown' ? 1 : -1), focusedColKey);
+    return;
+  }
+
+  // 좌/우 화살표: 편집 가능 컬럼 간 이동
+  if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+    if (inp) return;
+    e.preventDefault();
+    const navCols = expertMode ? COL_NAV_EXPERT : COL_NAV_NORMAL;
+    const curIdx  = navCols.indexOf(focusedColKey);
+    const nextIdx = curIdx + (e.key === 'ArrowRight' ? 1 : -1);
+    if (nextIdx < 0 || nextIdx >= navCols.length) return;
+    focusCell(focusedRowIdx < 0 ? 0 : focusedRowIdx, navCols[nextIdx]);
+    return;
+  }
+
+  // 스페이스바 / 엔터: 포커스된 셀 액션 실행
+  if ((e.key === ' ' || e.key === 'Enter') && !inp) {
+    const active = document.activeElement;
+    if (active && active._action) {
+      e.preventDefault();
+      active._action();
+    }
+  }
 });
 
 /* ── View toggle ── */
@@ -399,6 +462,8 @@ viewBtn.addEventListener('click', () => {
 
 function render() {
   if (!lastRaw) return;
+  // Don't re-render while user is actively typing in an inline input
+  if (document.querySelector('input.inline-edit')) return;
   if (showRaw || !lastRows) {
     tblWrap.style.display = 'none';
     rawEl.style.display   = 'block';
@@ -414,21 +479,64 @@ function render() {
 
 /* ── Table rendering ── */
 function renderTable(rows) {
+  if (document.querySelector('input.inline-edit')) return;
   tbody.innerHTML = '';
-  rows.forEach(r => {
+
+  const makeStatusBadge = (s, rawStatus) => {
+    if (s === 'on')   return '<span class="badge badge-on"><span class="dot dot-on"></span>On</span>';
+    if (s === 'off')  return '<span class="badge badge-off"><span class="dot dot-off"></span>Off</span>';
+    if (s === 'up')   return '<span class="badge badge-up"><span class="dot dot-up"></span>Up</span>';
+    if (s === 'down') return '<span class="badge badge-down"><span class="dot dot-down"></span>Down</span>';
+    if (isTrip(s))    return `<span class="badge badge-trip"><span class="dot dot-trip"></span>${rawStatus || 'Trip'}</span>`;
+    return `<span class="badge badge-unk"><span class="dot dot-unk"></span>${rawStatus || '-'}</span>`;
+  };
+
+  const makeInlineEdit = (td, opts) => {
+    /* opts: { cur, step, min, max, type, onCommit(v) } */
+    if (td.querySelector('input')) return;
+    const cur = opts.cur;
+    const isText = opts.type === 'text';
+    td.textContent = '';
+    const inp = document.createElement('input');
+    inp.className = 'inline-edit';
+    if (isText) {
+      inp.type = 'text';
+    } else {
+      inp.type = 'number';
+      inp.step  = opts.step  || '1';
+      inp.min   = opts.min   !== undefined ? opts.min : '0';
+      if (opts.max !== undefined) inp.max = opts.max;
+    }
+    inp.value = cur !== '-' ? cur : '';
+    td.appendChild(inp);
+    inp.focus(); inp.select();
+
+    const commit = () => {
+      const raw = inp.value.trim();
+      td.textContent = raw !== '' ? raw : cur;
+      if (isText) {
+        if (raw !== '' && raw !== cur) opts.onCommit(raw);
+      } else {
+        const v = parseFloat(inp.value);
+        if (!isNaN(v) && raw !== cur) opts.onCommit(v);
+      }
+    };
+    inp.addEventListener('blur', commit);
+    inp.addEventListener('keydown', e => {
+      if (e.key === 'Enter')  { e.preventDefault(); inp.blur(); }
+      if (e.key === 'Escape') { td.textContent = cur; }
+      if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+        e.preventDefault();
+        inp.blur();
+        focusCell(focusedRowIdx + (e.key === 'ArrowDown' ? 1 : -1), focusedColKey);
+      }
+    });
+  };
+
+  rows.forEach((r, rowIdx) => {
     const tr = document.createElement('tr');
     const st = (r.status || '').toLowerCase();
-    if (st === 'trip') tr.classList.add('trip-row');
-
-    // Checkbox (edit mode)
-    const tdSel = document.createElement('td');
-    tdSel.className = 'col-sel' + (editMode ? '' : ' hidden');
-    const chk = document.createElement('input');
-    chk.type = 'checkbox';
-    chk.dataset.name = r.name || r.ch_label;
-    chk.addEventListener('change', updateSelCount);
-    tdSel.appendChild(chk);
-    tr.appendChild(tdSel);
+    if (isAlertSt(st)) tr.classList.add('trip-row');
 
     // Ch
     const tdCh = document.createElement('td');
@@ -437,27 +545,44 @@ function renderTable(rows) {
 
     // Name
     const tdName = document.createElement('td');
-    tdName.textContent = r.name || '-';
+    if (editMode) {
+      tdName.className = 'v0set-cell';
+      tdName.tabIndex = 0;
+      tdName.title = 'Space / Enter / 더블클릭: 이름 편집';
+      tdName.textContent = r.name || '-';
+      const openName = () => makeInlineEdit(tdName, {
+        cur: tdName.textContent.replace(' ✎', '').trim(),
+        type: 'text',
+        onCommit: v => applyHV('name', [r.chan], v),
+      });
+      tdName._action = openName;
+      tdName.addEventListener('dblclick', openName);
+      tdName.addEventListener('focus', () => { focusedRowIdx = rowIdx; focusedColKey = 'name'; });
+    } else {
+      tdName.textContent = r.name || '-';
+    }
     tr.appendChild(tdName);
 
     // Status
     const tdSt = document.createElement('td');
-    if (st === 'on') {
-      tdSt.innerHTML = '<span class="badge badge-on"><span class="dot dot-on"></span>On</span>';
-    } else if (st === 'off') {
-      tdSt.innerHTML = '<span class="badge badge-off"><span class="dot dot-off"></span>Off</span>';
-    } else if (st === 'up') {
-      tdSt.innerHTML = '<span class="badge badge-up"><span class="dot dot-up"></span>Up</span>';
-    } else if (st === 'down') {
-      tdSt.innerHTML = '<span class="badge badge-down"><span class="dot dot-down"></span>Down</span>';
-    } else if (st === 'trip') {
-      tdSt.innerHTML = '<span class="badge badge-trip"><span class="dot dot-trip"></span>Trip</span>';
-    } else {
-      tdSt.innerHTML = `<span class="badge badge-unk"><span class="dot dot-unk"></span>${r.status || '-'}</span>`;
+    tdSt.innerHTML = makeStatusBadge(st, r.status);
+    if (editMode && (st === 'on' || st === 'off' || st === 'up' || st === 'down' || isAlertSt(st))) {
+      tdSt.className = 'status-edit';
+      tdSt.tabIndex = 0;
+      const stParts = st.split('+').map(c => c.trim());
+      const isOnLike = stParts.some(c => c === 'on' || c === 'up');
+      tdSt.title = isOnLike ? 'Space / Enter: Off' : 'Space / Enter: On';
+      const toggle = () => {
+        const chName = r.name && r.name !== '-' ? r.name : `${r.crate}:${r.chan}`;
+        applyHV(isOnLike ? 'off' : 'on', [chName]);
+      };
+      tdSt._action = toggle;
+      tdSt.addEventListener('click', () => { tdSt.focus(); });
+      tdSt.addEventListener('focus', () => { focusedRowIdx = rowIdx; focusedColKey = 'status'; });
     }
     tr.appendChild(tdSt);
 
-    // VMon vs V0Set
+    // VMon
     const vmon  = parseFloat(r.vmon);
     const v0set = parseFloat(r.v0set);
     const tdVMon = document.createElement('td');
@@ -477,75 +602,134 @@ function renderTable(rows) {
     tdIMon.textContent = !isNaN(imon) ? imon.toFixed(3) : (r.imon || '-');
     tr.appendChild(tdIMon);
 
-    // V0Set (클릭 시 인라인 편집 — 편집 모드에서만)
+    // V0Set
     const tdV0Set = document.createElement('td');
-    tdV0Set.className = editMode ? 'v0set-cell' : '';
-    tdV0Set.textContent = r.v0set || '-';
     if (editMode) {
-      tdV0Set.title = '클릭하여 전압 편집';
-      tdV0Set.addEventListener('click', () => {
-        if (tdV0Set.querySelector('input')) return;
-        const cur = tdV0Set.textContent.trim();
-        tdV0Set.textContent = '';
-        const inp = document.createElement('input');
-        inp.className = 'inline-edit';
-        inp.type = 'number'; inp.step = '1'; inp.min = '0'; inp.max = '2000';
-        inp.value = cur !== '-' ? cur : '';
-        tdV0Set.appendChild(inp);
-        inp.focus(); inp.select();
-        const commit = () => {
-          const v = parseFloat(inp.value);
-          if (!isNaN(v)) {
-            const chName = r.name && r.name !== '-' ? r.name : r.ch_label;
-            showConfirm(
-              `채널 ${chName} 전압을 ${v}V로 변경하시겠습니까?`,
-              () => applyHV('voltage', [chName], v)
-            );
-          }
-          tdV0Set.textContent = inp.value !== '' ? inp.value : cur;
-          tdV0Set.className = 'v0set-cell';
-        };
-        inp.addEventListener('blur', commit);
-        inp.addEventListener('keydown', e => {
-          if (e.key === 'Enter') { inp.blur(); }
-          if (e.key === 'Escape') { tdV0Set.textContent = cur; tdV0Set.className = 'v0set-cell'; }
-        });
+      tdV0Set.className = 'v0set-cell';
+      tdV0Set.tabIndex = 0;
+      tdV0Set.title = 'Space / Enter / 더블클릭: 편집';
+      tdV0Set.textContent = r.v0set || '-';
+      const openV0 = () => makeInlineEdit(tdV0Set, {
+        cur: tdV0Set.textContent.replace(' ✎', '').trim(),
+        step: '1', min: 0, max: 2000,
+        onCommit: v => {
+          const ch = r.name && r.name !== '-' ? r.name : `${r.crate}:${r.chan}`;
+          applyHV('voltage', [ch], v);
+        },
       });
+      tdV0Set._action = openV0;
+      tdV0Set.addEventListener('dblclick', openV0);
+      tdV0Set.addEventListener('focus', () => { focusedRowIdx = rowIdx; focusedColKey = 'v0set'; });
+    } else {
+      tdV0Set.textContent = r.v0set || '-';
     }
     tr.appendChild(tdV0Set);
 
     // I0Set
     const tdI0Set = document.createElement('td');
-    tdI0Set.textContent = r.i0set || '-';
+    if (editMode) {
+      tdI0Set.className = 'v0set-cell';
+      tdI0Set.tabIndex = 0;
+      tdI0Set.title = 'Space / Enter / 더블클릭: 편집';
+      tdI0Set.textContent = r.i0set || '-';
+      const openI0 = () => makeInlineEdit(tdI0Set, {
+        cur: tdI0Set.textContent.replace(' ✎', '').trim(),
+        step: '0.001', min: 0,
+        onCommit: v => {
+          const ch = r.name && r.name !== '-' ? r.name : `${r.crate}:${r.chan}`;
+          applyHV('i0set', [ch], v);
+        },
+      });
+      tdI0Set._action = openI0;
+      tdI0Set.addEventListener('dblclick', openI0);
+      tdI0Set.addEventListener('focus', () => { focusedRowIdx = rowIdx; focusedColKey = 'i0set'; });
+    } else {
+      tdI0Set.textContent = r.i0set || '-';
+    }
     tr.appendChild(tdI0Set);
 
     // Expert columns
     const tdRUp = document.createElement('td');
-    tdRUp.className = 'expert-col' + (expertMode ? '' : ' hidden');
-    tdRUp.textContent = r.rup || '-';
+    if (expertMode) {
+      tdRUp.className = 'expert-col v0set-cell';
+      tdRUp.tabIndex = 0;
+      tdRUp.title = 'Space / Enter / 더블클릭: RampUp 편집';
+      tdRUp.textContent = r.rup || '-';
+      const openRUp = () => makeInlineEdit(tdRUp, {
+        cur: tdRUp.textContent.replace(' ✎', '').trim(),
+        step: '1', min: 0,
+        onCommit: v => {
+          const ch = r.name && r.name !== '-' ? r.name : `${r.crate}:${r.chan}`;
+          applyHV('rup', [ch], v);
+        },
+      });
+      tdRUp._action = openRUp;
+      tdRUp.addEventListener('dblclick', openRUp);
+      tdRUp.addEventListener('focus', () => { focusedRowIdx = rowIdx; focusedColKey = 'rup'; });
+    } else {
+      tdRUp.className = 'expert-col hidden';
+      tdRUp.textContent = r.rup || '-';
+    }
     tr.appendChild(tdRUp);
 
     const tdRDown = document.createElement('td');
-    tdRDown.className = 'expert-col' + (expertMode ? '' : ' hidden');
-    tdRDown.textContent = r.rdown || '-';
+    if (expertMode) {
+      tdRDown.className = 'expert-col v0set-cell';
+      tdRDown.tabIndex = 0;
+      tdRDown.title = 'Space / Enter / 더블클릭: RampDown 편집';
+      tdRDown.textContent = r.rdown || '-';
+      const openRDown = () => makeInlineEdit(tdRDown, {
+        cur: tdRDown.textContent.replace(' ✎', '').trim(),
+        step: '1', min: 0,
+        onCommit: v => {
+          const ch = r.name && r.name !== '-' ? r.name : `${r.crate}:${r.chan}`;
+          applyHV('rdown', [ch], v);
+        },
+      });
+      tdRDown._action = openRDown;
+      tdRDown.addEventListener('dblclick', openRDown);
+      tdRDown.addEventListener('focus', () => { focusedRowIdx = rowIdx; focusedColKey = 'rdown'; });
+    } else {
+      tdRDown.className = 'expert-col hidden';
+      tdRDown.textContent = r.rdown || '-';
+    }
     tr.appendChild(tdRDown);
 
     const tdVMax = document.createElement('td');
-    tdVMax.className = 'expert-col' + (expertMode ? '' : ' hidden');
-    tdVMax.textContent = r.vmax || '-';
+    if (expertMode) {
+      tdVMax.className = 'expert-col v0set-cell';
+      tdVMax.tabIndex = 0;
+      tdVMax.title = 'Space / Enter / 더블클릭: SVMax 편집';
+      tdVMax.textContent = r.vmax || '-';
+      const openVMax = () => makeInlineEdit(tdVMax, {
+        cur: tdVMax.textContent.replace(' ✎', '').trim(),
+        step: '1', min: 0,
+        onCommit: v => {
+          const ch = r.name && r.name !== '-' ? r.name : `${r.crate}:${r.chan}`;
+          applyHV('svmax', [ch], v);
+        },
+      });
+      tdVMax._action = openVMax;
+      tdVMax.addEventListener('dblclick', openVMax);
+      tdVMax.addEventListener('focus', () => { focusedRowIdx = rowIdx; focusedColKey = 'vmax'; });
+    } else {
+      tdVMax.className = 'expert-col hidden';
+      tdVMax.textContent = r.vmax || '-';
+    }
     tr.appendChild(tdVMax);
 
     tbody.appendChild(tr);
   });
+
+  // 편집 모드에서 이전 포커스 위치 복원
+  if (editMode && focusedRowIdx >= 0) {
+    requestAnimationFrame(() => focusCell(focusedRowIdx, focusedColKey));
+  }
 }
 
 /* ── Parser ──
    HVWrappdemo --Status --VMon --IMon --V0Set --I0Set 출력에서
    "📄 Output:" 이후 섹션을 파싱.
-
-   헤더 행(ch/name/status/vmon 중 2개 이상 포함)을 찾고,
-   이후 숫자로 시작하는 행들을 채널 데이터로 파싱.
-   파싱 실패 시 null 반환 → Raw 텍스트 폴백.
 */
 function parseHvOutput(raw) {
   const outMarker = '📄 Output:';
@@ -562,10 +746,7 @@ function parseHvOutput(raw) {
   if (!lines.length) return null;
 
   const rows = [];
-
-  // Header-only match — Status까지만 필수, 나머지 필드는 개별 pick으로 처리
-  // (Trip 상태에서 VMon 등이 비정상 포맷으로 나와도 행이 사라지지 않도록)
-  const headerRe = /^(\d{1,2})-(\d{1,2})\s+\(([^)]*)\)\s+Status\s*=\s*(\S+)/i;
+  const headerRe = /^(\d{1,2})-(\d{1,2})\s+\(([^)]*)\)\s+Status\s*=\s*(.+?)(?=\s+\w+\s*=|$)/i;
 
   const pickField = (line, key) => {
     const re = new RegExp(key + '\\s*=\\s*([+-]?\\d+(?:\\.\\d+)?)', 'i');
@@ -605,6 +786,7 @@ function parseHvOutput(raw) {
 
 /* ── Fetch ── */
 async function loadStatus() {
+  if (_cmdInFlight) return;  // 명령 실행 중이면 이번 틱 건너뜀
   try {
     const res  = await fetch('/api/hv/status-all?t=' + Date.now() + (expertMode ? '&expert=1' : ''));
     const data = await res.json();
@@ -612,6 +794,7 @@ async function loadStatus() {
 
     lastRaw  = data.output || '(출력 없음)';
     lastRows = parseHvOutput(lastRaw);
+    detectTransitions(lastRows);
 
     tsEl.textContent = '마지막: ' + new Date().toLocaleTimeString();
     render();
@@ -631,7 +814,7 @@ function setExpertColumnsVisible(visible) {
   });
 }
 
-/* ── Auto-refresh (unified) ── */
+/* ── Auto-refresh ── */
 function applyAutoInterval(ms) {
   autoMs = ms;
   autoIdx = AUTO_CHOICES.indexOf(ms);
@@ -683,8 +866,106 @@ loadStatus();
 loadHodoscopeHV();
 applyAutoInterval(autoMs);
 
-/* Refresh hodoscope HV at the same auto interval */
 setInterval(loadHodoscopeHV, autoMs);
+
+/* ─── Trip / Ramp-Complete Alerts ─────────────────────────── */
+
+const HV_AUDIO_TRIP = '/static/audio/trip.mp3';
+const HV_AUDIO_RAMP = '/static/audio/ramp.mp3';
+
+function _playHvSound(src) {
+  const a = new Audio(src);
+  a.play().catch(() => {});
+}
+
+(function () {
+  const unlock = () => {
+    [HV_AUDIO_TRIP, HV_AUDIO_RAMP].forEach(src => {
+      const a = new Audio(src);
+      a.volume = 0;
+      a.play().then(() => { a.pause(); a.currentTime = 0; }).catch(() => {});
+    });
+    document.removeEventListener('click',   unlock);
+    document.removeEventListener('keydown', unlock);
+  };
+  document.addEventListener('click',   unlock);
+  document.addEventListener('keydown', unlock);
+})();
+
+const tripBanner      = document.getElementById('trip-banner');
+const tripBannerLabel = document.getElementById('trip-banner-label');
+const tripBannerCh    = document.getElementById('trip-banner-channels');
+const tripBannerClose = document.getElementById('trip-banner-close');
+let   tripDismissed   = false;
+
+tripBannerClose.addEventListener('click', () => {
+  tripBanner.classList.remove('visible');
+  tripDismissed = true;
+});
+
+let prevHvMap   = {};
+let hvFirstLoad = true;
+
+function detectTransitions(newRows) {
+  if (!newRows || !newRows.length) return;
+
+  const newMap = {};
+  for (const r of newRows) {
+    newMap[r.ch_label] = {
+      status: (r.status || '').toLowerCase(),
+      name:   r.name && r.name !== '-' ? r.name : r.chan,
+    };
+  }
+
+
+  const currentAlerts = [];
+  let newAlertFound = false;
+  let rampUpDone    = false;
+  let rampDwnDone   = false;
+
+  for (const [key, curr] of Object.entries(newMap)) {
+    const prev   = prevHvMap[key];
+    const prevSt = prev ? prev.status : null;
+    const currSt = curr.status;
+
+    if (isAlertSt(currSt)) {
+      const parts = alertParts(currSt);
+      currentAlerts.push({ name: curr.name, status: parts.join('+') });
+      if (!hvFirstLoad && !isAlertSt(prevSt)) newAlertFound = true;
+    }
+
+    if (!hvFirstLoad) {
+      if (prevSt === 'up'   && currSt === 'on')  rampUpDone  = true;
+      if (prevSt === 'down' && (currSt === 'on' || currSt === 'off')) rampDwnDone = true;
+    }
+  }
+
+  hvFirstLoad = false;
+
+  if (currentAlerts.length > 0) {
+    // status를 + 기준으로 분리 → 모든 활성 조건 수집 (중복 제거)
+    const allConditions = [...new Set(
+      currentAlerts.flatMap(a => a.status.split('+').map(c => c.trim()))
+    )];
+    tripBannerLabel.textContent = allConditions.join(' + ') + ' 발생!';
+    // 채널별로 조건 표시: "T1C(Over Current+Internal Trip)"
+    tripBannerCh.textContent = currentAlerts
+      .map(a => `${a.name}(${a.status})`)
+      .join('  ·  ');
+    if (newAlertFound) {
+      tripDismissed = false;
+      _playHvSound(HV_AUDIO_TRIP);
+    }
+    if (!tripDismissed) tripBanner.classList.add('visible');
+  } else {
+    tripBanner.classList.remove('visible');
+    tripDismissed = false;
+  }
+
+  if (rampUpDone || rampDwnDone) _playHvSound(HV_AUDIO_RAMP);
+
+  prevHvMap = newMap;
+}
 </script>
 </body>
 </html>

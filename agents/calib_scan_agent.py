@@ -12,7 +12,7 @@ import tools.motor_control_tool as motor
 
 from .base_agent import BaseAgent
 sys.path.append(str(Path(__file__).parent.parent))
-from config import AGENT_MODELS
+from config import AGENT_MODELS, MSG_PLOT_CONFIRM
 
 
 class CalibScanAgent(BaseAgent):
@@ -197,8 +197,10 @@ When ALL towers are completed, the SYSTEM sends the completion message and ends 
                 last_run = status["runs"][-1]
                 return (f"Phase: {phase} | Tower: {tower} ({tower_idx+1}/{total}) | "
                         f"DAQ done (Run {last_run}) — REQUIRED NEXT: plot confirmation message (step 1c). "
-                        f"DO NOT call daq_run_tool again. 완료 시 시스템이 자동으로 완료 처리한다.")
-            return f"Phase: {phase} | Tower: {tower} ({tower_idx+1}/{total})"
+                        f"DO NOT call daq_run_tool or motor_x_move_tool. 완료 시 시스템이 자동으로 완료 처리한다.")
+            # runs exist + needs_plot_confirm=False → should already be completed; guard prevents loops
+            return (f"Phase: {phase} | Tower: {tower} ({tower_idx+1}/{total}) | "
+                    f"needs_plot_confirm=False — DO NOT call any tool or send plot confirmation.")
         return f"Phase: {phase} | All towers completed — system will terminate automatically"
 
     # Fields that can never be overwritten by the LLM under any circumstances.
@@ -305,6 +307,31 @@ When ALL towers are completed, the SYSTEM sends the completion message and ends 
             return result
 
         return f"Error: Unknown tool {tool_name}"
+
+    def _guard_tool(self, tool_name: str, decision) -> Optional[str]:
+        # 1. plot confirm 필요 시 모든 tool 차단
+        if self.state.get("needs_plot_confirm"):
+            return (
+                f"needs_plot_confirm=True — DO NOT call {tool_name}. "
+                f'Send: {{"message": "{MSG_PLOT_CONFIRM}"}}'
+            )
+        idx = self.state.get("current_tower_idx", 0)
+        if idx >= len(self.tower_order):
+            return None
+        tower = self.tower_order[idx]
+        st = self.state["tower_status"].get(tower, {})
+        # 2. motor 이미 완료된 타워에 재호출 차단
+        if tool_name == "motor_x_move_tool" and st.get("x_moved"):
+            return f"{tower} X-axis already moved. Send Y-axis move message. {self._get_step_hint()}"
+        # 3. Y축 미확인 시 DAQ 차단
+        if tool_name == "daq_run_tool" and not st.get("y_confirmed"):
+            return f"{tower} Y-axis not confirmed. Send Y-axis move message first. {self._get_step_hint()}"
+        return None
+
+    def _guard_ai_message(self, message: str) -> Optional[str]:
+        if MSG_PLOT_CONFIRM in message and not self.state.get("needs_plot_confirm"):
+            return f"needs_plot_confirm=False — DO NOT send plot confirmation. {self._get_step_hint()}"
+        return None
 
     def _format_progress(self) -> str:
         """현재 진행 상황을 문자열로 반환 (AI 메시지용)"""
@@ -424,6 +451,7 @@ When ALL towers are completed, the SYSTEM sends the completion message and ends 
         lines.append(f"Phase: {self.state['phase']}")
         lines.append(f"Beam Energy: {self.state['beam_energy']} GeV")
         lines.append(f"Target Events: {self.state['target_events']}")
+        lines.append(f"needs_plot_confirm: {self.state.get('needs_plot_confirm', False)}")
         lines.append("")
         lines.append("Tower Progress:")
         for i, tower in enumerate(self.tower_order):

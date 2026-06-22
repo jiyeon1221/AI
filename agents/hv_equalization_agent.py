@@ -24,7 +24,7 @@ from tools.hv_equalization_tool import (
 
 from .base_agent import BaseAgent
 sys.path.append(str(Path(__file__).parent.parent))
-from config import AGENT_MODELS
+from config import AGENT_MODELS, MSG_PLOT_CONFIRM, MSG_HV_CONFIRM
 
 
 class HVEqualizationAgent(BaseAgent):
@@ -89,6 +89,7 @@ class HVEqualizationAgent(BaseAgent):
             "x_moved": False,
             "y_confirmed": False,
             "needs_suggest": False,
+            "needs_plot_confirm": False,
         }
         self.log(f"Agent 초기화: {tower}, E={beam_energy}GeV, Events={target_events}, Target ADC={target_adc}")
 
@@ -120,7 +121,10 @@ The SYSTEM marks Y-axis confirmed automatically — do NOT output any state upda
 [INNER LOOP — repeat 1c→1g until CONVERGED]
 1c. Execute DAQ:
   {{"tool": "daq_run_tool", "params": {{"events": <events>, "pos_h": <x>, "pos_v": <y>, "beam_energy": <energy>}}}}
-  (Plot is auto-rendered by DQM live during DAQ — never call any plot tool.)
+
+1c-plot. Show plot confirmation (IMMEDIATELY after DAQ, before suggest):
+  {{"message": "데이터 수집 및 Plot 생성이 완료되었습니다. 결과를 확인해주세요."}}
+  Wait for user 완료 — the SYSTEM then sets needs_suggest=True automatically.
 
 1d. Suggest HV:
   {{"tool": "hv_equalization_suggest", "params": {{"run_number": <run>, "tower": "{t}"}}}}
@@ -140,7 +144,7 @@ After user says "완료":
   NEVER include a done channel in channel_values.
 
 1g. Confirmation:
-  {{"message": "HV 전압이 변경되었습니다. 결과를 확인하고 '완료'를 입력하면 다음 DAQ를 시작합니다."}}
+  {{"message": "전압이 변경되었습니다. 확인 후 '완료'를 눌러주세요."}}
 
 After user says "완료":
   - State shows NOT CONVERGED → back to step 1c
@@ -180,8 +184,10 @@ After user says "완료":
             return f"{base} | REQUIRED NEXT: hv_execute_tool voltage (step 1f — user already confirmed)"
         elif adc_known and suggest_pending:
             return f"{base} | REQUIRED NEXT: approval message (step 1e)"
+        elif self.state.get("needs_plot_confirm"):
+            return f"{base} | REQUIRED NEXT: plot confirmation message (step 1c-plot — DAQ done, send plot confirm before suggest)"
         elif self.state.get("needs_suggest"):
-            return f"{base} | REQUIRED NEXT: hv_equalization_suggest (step 1d — DAQ done, analyze now)"
+            return f"{base} | REQUIRED NEXT: hv_equalization_suggest (step 1d — plot confirmed, analyze now)"
         elif adc_known:
             return f"{base} | REQUIRED NEXT: daq_run_tool (step 1c)"
         else:
@@ -203,8 +209,12 @@ After user says "완료":
                 lines.append(f"*** REQUIRED NEXT: hv_execute_tool status (step 1b) — Y-axis confirmed, check HV now ***")
             lines.append("")
 
-        if self.state.get("needs_suggest"):
-            lines.append(f"*** REQUIRED NEXT: hv_equalization_suggest (step 1d) — DAQ run {self.state.get('last_run_number')} complete, analyze NOW ***")
+        if self.state.get("needs_plot_confirm"):
+            lines.append(f"*** REQUIRED NEXT: plot confirmation message (step 1c-plot) — DAQ done, send plot confirm BEFORE suggest ***")
+            lines.append(f'*** output: {{"message": "{MSG_PLOT_CONFIRM}"}} ***')
+            lines.append("")
+        elif self.state.get("needs_suggest"):
+            lines.append(f"*** REQUIRED NEXT: hv_equalization_suggest (step 1d) — plot confirmed, analyze NOW ***")
             lines.append(f"*** DO NOT call daq_run_tool again — call hv_equalization_suggest first ***")
             lines.append("")
         elif adc_known:
@@ -232,6 +242,7 @@ After user says "완료":
         lines.append(f"Target Events: {self.state['target_events']}")
         lines.append(f"Target ADC: {self.state['target_adc_c']}")
         lines.append(f"Last HV: C={self.state.get('last_hv_c')}V, S={self.state.get('last_hv_s')}V")
+        lines.append(f"needs_plot_confirm: {self.state.get('needs_plot_confirm', False)}")
         if self.state.get("last_suggested_hv_c") is not None:
             dc = self.state.get("channel_done_c", False)
             ds = self.state.get("channel_done_s", False)
@@ -314,7 +325,8 @@ After user says "완료":
                     self.state["last_run_number"] = run_number
                     self.state["iterations"] = self.state.get("iterations", 0) + 1
                     self.log(f"DAQ Run {run_number} 완료: {self.tower}, {params.get('events', 0)} events")
-                self.state["needs_suggest"] = True  # DAQ 후 반드시 suggest 호출
+                self.state["needs_suggest"] = False       # suggest는 plot confirm 후
+                self.state["needs_plot_confirm"] = True   # DAQ 후 먼저 plot 확인
                 return result
 
             elif tool_name == "hv_execute_tool":
@@ -347,6 +359,8 @@ After user says "완료":
                         self.state["last_hv_s"] = self.state["last_suggested_hv_s"]
                     self.state["last_suggested_hv_c"] = None
                     self.state["last_suggested_hv_s"] = None
+                    self.state["last_adc_c"] = None
+                    self.state["last_adc_s"] = None
 
                     self.io.send_tool_output(f"🔍 HV 적용 확인 중 ({self.tower})...")
                     try:
@@ -366,58 +380,11 @@ After user says "완료":
                 return result
 
             elif tool_name == "hv_equalization_suggest":
-                self._apply_hv_suggest_params_from_state(
-                    params,
-                    tower=self.tower,
-                    run_number=self.state.get("last_run_number"),
-                    hv_c=self.state.get("last_hv_c"),
-                    hv_s=self.state.get("last_hv_s"),
-                )
-                def _call_suggest():
-                    res = hv_equalization_suggest.invoke(params) if hasattr(hv_equalization_suggest, "invoke") else hv_equalization_suggest(**params)
-                    r = json.loads(res) if isinstance(res, str) else res
-                    if isinstance(r, dict) and r.get("status") == "error":
-                        raise RuntimeError(r.get("message", "hv_equalization_suggest 실패"))
-                    return res
-                result = self._run_tool_with_retry(_call_suggest, "hv_equalization_suggest")
+                result_dict = self._run_tool_with_retry(self._do_suggest, "hv_equalization_suggest")
                 self.state["needs_suggest"] = False  # suggest 완료
-                try:
-                    r = json.loads(result) if isinstance(result, str) else result
-                    cur = r.get("current", {})
-                    sug = r.get("suggested", {})
-                    self.state["last_adc_c"] = cur.get("C", {}).get("adc")
-                    self.state["last_adc_s"] = cur.get("S", {}).get("adc")
-                    raw_hv_c = sug.get("C", {}).get("hv")
-                    raw_hv_s = sug.get("S", {}).get("hv")
-                    self.state["last_suggested_hv_c"] = int(round(raw_hv_c)) if raw_hv_c is not None else None
-                    self.state["last_suggested_hv_s"] = int(round(raw_hv_s)) if raw_hv_s is not None else None
-                    self.state["channel_done_c"] = bool(sug.get("C", {}).get("done", False))
-                    self.state["channel_done_s"] = bool(sug.get("S", {}).get("done", False))
-                    adc_c = self.state["last_adc_c"]
-                    adc_s = self.state["last_adc_s"]
-                    summary = (
-                        f"🔬 HV Suggest — {self.tower} | "
-                        f"ADC: C={adc_c:.1f if adc_c else 'N/A'}, S={adc_s:.1f if adc_s else 'N/A'} | "
-                        f"HV 제안: C→{self.state['last_suggested_hv_c']}V, S→{self.state['last_suggested_hv_s']}V | "
-                        f"Done: C={self.state['channel_done_c']}, S={self.state['channel_done_s']}"
-                    )
-                    self.io.send_tool_output(summary)
-                    self.log(summary)
-                except Exception:
-                    self.io.send_tool_output(str(result)[:400])
-                try:
-                    run_number = self.state.get("last_run_number", 0) or 0
-                    fit_result = generate_fitting_summary(
-                        session_id="default", tower=self.tower, run_number=run_number
-                    )
-                    self.io.send_tool_output(
-                        f"── HV Fitting History ({self.tower}) ──\n{fit_result['table']}\nEq: {fit_result['equation']}"
-                    )
-                    if fit_result.get("plot_path"):
-                        self.io.send_plots([fit_result["plot_path"]])
-                except Exception as e:
-                    self.log(f"fitting summary 실패: {e}")
-                return result
+                self._emit_suggest_summary()
+                self._emit_fitting_history()
+                return json.dumps(result_dict, ensure_ascii=False) if isinstance(result_dict, dict) else str(result_dict)
 
             elif tool_name == "hv_equalization_done_channel":
                 run_number = self.state.get("last_run_number", 0) or 0
@@ -448,6 +415,76 @@ After user says "완료":
         except Exception as e:
             self.log(f"Tool 실행 오류 ({tool_name}): {str(e)}")
             return f"Error: {str(e)}"
+
+    # ===== Suggest 처리 (ADC 측정만 sim이 오버라이드) =====
+
+    def _measure_adc(self, hv_c: float, hv_s: float, run_number: int) -> Tuple[Optional[float], Optional[float]]:
+        """실제 run 데이터에서 (adc_c, adc_s) peakADC 측정.
+        HV Equalization Sim agent는 이 메서드만 오버라이드해 ADC를 시뮬레이션한다.
+        나머지 워크플로우(suggest 계산/state 갱신/hv_execute/motor/daq)는 전부 공유."""
+        from tools.hv_equalization_tool import calculate_valley_cut_average
+        avg_c, _ = calculate_valley_cut_average(run_number, "C", self.tower)
+        avg_s, _ = calculate_valley_cut_average(run_number, "S", self.tower)
+        return avg_c, avg_s
+
+    def _do_suggest(self) -> Dict[str, Any]:
+        """ADC 측정 → process_suggestion → state 갱신 (찐/ADC-sim 공통). 실패 시 RuntimeError."""
+        from tools.hv_equalization_tool import _session_manager
+        run_number = int(self.state.get("last_run_number") or 0)
+        hv_c = float(self.state.get("last_hv_c") or 775.0)
+        hv_s = float(self.state.get("last_hv_s") or 775.0)
+
+        adc_c, adc_s = self._measure_adc(hv_c, hv_s, run_number)
+        if adc_c is None or adc_s is None:
+            raise RuntimeError(f"Run {run_number}에서 ADC 데이터를 가져올 수 없습니다.")
+
+        result_dict = _session_manager.process_suggestion(
+            "default", run_number, float(adc_c), float(adc_s), hv_c, hv_s
+        )
+        if result_dict.get("status") != "success":
+            raise RuntimeError(result_dict.get("message", "hv_equalization_suggest 실패"))
+
+        cur = result_dict.get("current", {})
+        sug = result_dict.get("suggested", {})
+        self.state["last_adc_c"] = cur.get("C", {}).get("adc", adc_c)
+        self.state["last_adc_s"] = cur.get("S", {}).get("adc", adc_s)
+        raw_hv_c = sug.get("C", {}).get("hv")
+        raw_hv_s = sug.get("S", {}).get("hv")
+        self.state["last_suggested_hv_c"] = int(round(raw_hv_c)) if raw_hv_c is not None else None
+        self.state["last_suggested_hv_s"] = int(round(raw_hv_s)) if raw_hv_s is not None else None
+        self.state["channel_done_c"] = bool(sug.get("C", {}).get("done", False))
+        self.state["channel_done_s"] = bool(sug.get("S", {}).get("done", False))
+        self.state["last_hv_c"] = round(hv_c, 1)
+        self.state["last_hv_s"] = round(hv_s, 1)
+        return result_dict
+
+    def _emit_suggest_summary(self):
+        adc_c = self.state.get("last_adc_c")
+        adc_s = self.state.get("last_adc_s")
+        adc_c_str = f"{adc_c:.1f}" if adc_c is not None else "N/A"
+        adc_s_str = f"{adc_s:.1f}" if adc_s is not None else "N/A"
+        summary = (
+            f"🔬 HV Suggest — {self.tower} | "
+            f"ADC: C={adc_c_str}, S={adc_s_str} | "
+            f"HV 제안: C→{self.state.get('last_suggested_hv_c')}V, S→{self.state.get('last_suggested_hv_s')}V | "
+            f"Done: C={self.state.get('channel_done_c')}, S={self.state.get('channel_done_s')}"
+        )
+        self.io.send_tool_output(summary)
+        self.log(summary)
+
+    def _emit_fitting_history(self):
+        try:
+            run_number = self.state.get("last_run_number", 0) or 0
+            fit_result = generate_fitting_summary(
+                session_id="default", tower=self.tower, run_number=run_number
+            )
+            self.io.send_tool_output(
+                f"── HV Fitting History ({self.tower}) ──\n{fit_result['table']}\nEq: {fit_result['equation']}"
+            )
+            if fit_result.get("plot_path"):
+                self.io.send_plots([fit_result["plot_path"]])
+        except Exception as e:
+            self.log(f"fitting summary 실패: {e}")
 
     def _extract_voltages(self, status_output: str) -> Tuple[Optional[float], Optional[float]]:
         # 채널명은 타워별 (T1C/T1S … T9C/T9S). status 출력의 "(<name>) ... V0Set = <v>" 형식에서 추출.
@@ -494,15 +531,26 @@ After user says "완료":
         return bool(self.state.get("done"))
 
     def _on_user_input(self, user_input: str):
-        # Y축 이동 확인: positioning phase(HV 미확인 상태)에서 사용자가 응답하면
-        # 코드가 직접 y_confirmed를 설정한다 (LLM update_state에 의존하지 않음).
+        # Y축 이동 확인
         if (self.state.get("x_moved")
                 and not self.state.get("y_confirmed")
                 and self.state.get("last_hv_c") is None):
             self.state["y_confirmed"] = True
             self.log("Y-axis confirmed by user")
+            return
+        # DAQ 후 plot 확인 → suggest 단계로 전환
+        if self.state.get("needs_plot_confirm"):
+            self.state["needs_plot_confirm"] = False
+            self.state["needs_suggest"] = True
+            self.log("Plot confirmed → proceed to hv_equalization_suggest")
 
     def _guard_tool(self, tool_name: str, decision: Dict[str, Any]) -> Optional[str]:
+        # plot confirm 필요 시 DAQ/suggest/hv 차단 (motor/status는 허용)
+        if self.state.get("needs_plot_confirm") and tool_name not in ("motor_x_move_tool",):
+            return (
+                f"needs_plot_confirm=True — send plot confirmation message first: "
+                f'{{"message": "{MSG_PLOT_CONFIRM}"}}'
+            )
         # done_channel은 두 채널 모두 수렴한 경우에만 허용
         if tool_name == "hv_equalization_done_channel":
             done_c = self.state.get("channel_done_c", False)
@@ -510,4 +558,9 @@ After user says "완료":
             if not (done_c and done_s):
                 return (f"수렴 미완료 (C={done_c}, S={done_s}). "
                         f"승인 메시지(step 1e)를 먼저 출력하세요.")
+        return None
+
+    def _guard_ai_message(self, message: str) -> Optional[str]:
+        # plot confirm 메시지가 아닌 상황에서 suggest 전에 plot confirm 없이 넘어가는 것 방지
+        # (역방향: needs_plot_confirm=True인데 plot confirm 외 메시지 보내는 경우는 _guard_tool이 처리)
         return None

@@ -721,10 +721,10 @@ hv_equalization_suggest로 HV 조정 제안 받으세요."""
                 )
             }
 
-        # HV Control Tool 파라미터 생성
+        # HV Control Tool 파라미터 생성 — 채널명은 현재 타워 기준 ({tower}C/{tower}S)
         tower = session.get("current_tower", "T5")
-        ch_c = "MCP-C"
-        ch_s = "MCP-S"
+        ch_c = f"{tower}C"
+        ch_s = f"{tower}S"
         hv_control_params = None
 
         if not c_done or not s_done:
@@ -941,51 +941,8 @@ def generate_fitting_summary(session_id: str = "default", tower: str = "T?",
     return {"table": table, "equation": equation, "plot_path": plot_path}
 
 
+
 # ======================= LangChain Tools =======================
-
-@tool
-def get_peak_adc_averages(run_number: Optional[int] = None, tower: Optional[str] = None) -> str:
-    """
-    특정 run의 peakADC 평균값을 C, S 채널 각각 계산합니다.
-    Valley cut을 적용하여 노이즈를 제거한 평균값을 반환합니다.
-    
-    Args:
-        run_number: 분석할 run 번호 (None이면 runnum.txt에서 자동 읽기)
-        tower: 타워 위치 (예: "T5", 필수 - agent에서 제공)
-    
-    Returns:
-        C, S 채널의 peakADC 평균값과 이벤트 개수
-    """
-    try:
-        # Run number 결정
-        if run_number is None:
-            run_number = get_current_run_number()
-            if run_number is None:
-                return "ERROR: Run number를 가져올 수 없습니다."
-        
-        # C 채널 계산
-        avg_c, count_c = calculate_valley_cut_average(run_number, 'C', tower)
-        
-        # S 채널 계산
-        avg_s, count_s = calculate_valley_cut_average(run_number, 'S', tower)
-        
-        result = f"Run {run_number} peakADC Analysis:\n\n"
-        
-        if avg_c is not None:
-            result += f"C 채널: {avg_c:.2f} ADC (이벤트 수: {count_c})\n"
-        else:
-            result += "C 채널: 데이터 없음\n"
-        
-        if avg_s is not None:
-            result += f"S 채널: {avg_s:.2f} ADC (이벤트 수: {count_s})"
-        else:
-            result += "S 채널: 데이터 없음"
-        
-        return result
-        
-    except Exception as e:
-        return f"ERROR: peakADC 계산 실패: {str(e)}"
-
 
 @tool
 def hv_equalization_start(target_c: float, target_s: float, tower: str = "T5") -> str:
@@ -1126,70 +1083,3 @@ def hv_equalization_done_channel(channels: str = "all") -> str:
     except Exception as e:
         return f"ERROR: Done 처리 실패: {str(e)}"
 
-
-@tool  
-def hv_equalization_status() -> str:
-    """
-    Exponential Fitting 시스템의 현재 상태를 확인합니다.
-    
-    Returns:
-        현재 fitting 상태, exponential 계수, 세션 정보
-    """
-    try:
-        session = _session_manager.sessions.get("default")
-        exp_predictor = _session_manager.exp_predictor
-        
-        status = f"""🎯 Exponential Fitting System Status
-
-Fitting 상태:
-  C 채널: {'✅ Fitted' if exp_predictor.is_fitted['C'] else '🔍 탐색모드'}
-  S 채널: {'✅ Fitted' if exp_predictor.is_fitted['S'] else '🔍 탐색모드'}
-  Fitting 라이브러리: {'scipy 사용가능' if SCIPY_AVAILABLE else '⚠️  2점 fitting 사용'}
-
-채널 상태:
-  C: {exp_predictor.channel_status['C']}
-  S: {exp_predictor.channel_status['S']}
-
-세션 상태:"""
-        
-        if session:
-            status += f"""
-  Target: C={session['target_c']}, S={session['target_s']}
-  현재 타워: {session.get('current_tower', 'N/A')}
-  현재 HV: C={session.get('current_hv_c', 'N/A')}V, S={session.get('current_hv_s', 'N/A')}V
-  진행 횟수: {session.get('iteration', 0)}회
-  히스토리: {len(session.get('history', []))}개 기록"""
-        else:
-            status += "\n  ❌ 활성 세션 없음"
-        
-        status += f"""
-
-Exponential 계수:"""
-        
-        for channel in ["C", "S"]:
-            if exp_predictor.is_fitted[channel]:
-                A, B = exp_predictor.coefficients[channel]
-                status += f"\n  {channel}: ADC = {A:.2f} * exp({B:.5f} * HV) ({len(exp_predictor.data_points[channel])}점)"
-            else:
-                status += f"\n  {channel}: 미fitted ({len(exp_predictor.data_points[channel])}점 수집됨)"
-        
-        return status
-        
-    except Exception as e:
-        return f"ERROR: 상태 확인 실패: {str(e)}"
-
-
-@tool
-def hv_equalization_reset() -> str:
-    """
-    현재 세션을 초기화하고 새로운 타워를 위한 준비를 합니다.
-    Target 값은 유지됩니다.
-    
-    Returns:
-        초기화 확인 메시지
-    """
-    try:
-        result = _session_manager.reset_for_new_tower("default")
-        return result
-    except Exception as e:
-        return f"ERROR: 초기화 실패: {str(e)}"

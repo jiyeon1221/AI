@@ -43,7 +43,7 @@ class RunLogTool(BaseTool):
             self.client = gspread.authorize(creds)
             # URL 대신 ID로 오픈
             spreadsheet = self.client.open_by_key(SPREADSHEET_ID)
-            self.sheet = spreadsheet.get_worksheet(0)  # 첫 번째 시트 선택
+            self.sheet = spreadsheet.get_worksheet_by_id(1170233028)
             return True
         except Exception as e:
             print(f"❌ Google Spreadsheet 인증 실패: {str(e)}")
@@ -203,43 +203,61 @@ class RunLogTool(BaseTool):
             )
             hv_aux = f"{hv_aux}\n{hodo_str}" if hv_aux else hodo_str
 
-        # 실제 시트 컬럼 순서 (스크린샷 기준)
-        # B(2): Program | C(3): Run # | D(4): evts | E(5): Time(start) | F(6): Time(end)
-        # G(7): HV DRC | H(8): HV Aux | I(9): Pos H | J(10): Pos V | K(11): Pos Rot | L(12): Pos Tilt
-        # M(13): Trigger Setup | N(14): Beam Type | O(15): Beam Energy | P(16): Beam Rate
-        # Q(17): Config | R(18): Notes
-        row = [
-            program,        # B: Program
-            run_num,        # C: Run #
-            evts,           # D: evts
-            start_time,     # E: Time (start)
-            end_time,       # F: Time (end)
-            hv_drc,         # G: HV DRC
-            hv_aux,         # H: HV Aux
-            pos_h,          # I: Position H
-            pos_v,          # J: Position V
-            pos_rot,        # K: Position Rot
-            pos_tilt,       # L: Position Tilt
-            "",             # M: Trigger Setup
-            "e-",           # N: Beam Type
-            beam_energy,    # O: Beam Energy
-            "",             # P: Beam Rate
-            config,         # Q: Config
-            notes           # R: Notes
-        ]
+        # Duration (seconds) and Rate (evts/s)
+        duration_secs = ""
+        rate = ""
+        if start_time and end_time:
+            try:
+                dt_fmt = "%Y-%m-%d %H:%M:%S"
+                dt_start = datetime.strptime(start_time, dt_fmt)
+                dt_end   = datetime.strptime(end_time,   dt_fmt)
+                duration_secs = int((dt_end - dt_start).total_seconds())
+                if evts and duration_secs > 0:
+                    rate = round(int(evts) / duration_secs, 1)
+            except (ValueError, TypeError):
+                pass
+
+        # AI가 채우는 열만 기록 (N: Trigger Setup 은 사람이 직접 채우므로 건드리지 않음)
+        # B(2): Program | C(3): Run # | D(4): evts | E(5): start | F(6): end | G(7): Duration
+        # H(8): HV DRC | I(9): HV Aux | J(10): Pos H | K(11): Pos V | L(12): Pos Rot | M(13): Pos Tilt
+        # O(15): Beam Type | P(16): Beam Energy | Q(17): Rate | R(18): Config | S(19): Notes
+        ai_columns = {
+            'B': program,
+            'C': run_num,
+            'D': evts,
+            'E': start_time,
+            'F': end_time,
+            'G': duration_secs,
+            'H': hv_drc,
+            'I': hv_aux,
+            'J': pos_h,
+            'K': pos_v,
+            'L': pos_rot,
+            'M': pos_tilt,
+            'O': "e-",
+            'P': beam_energy,
+            'Q': rate,
+            'R': config,
+            'S': notes,
+        }
 
         try:
             # 마지막 데이터 행 찾기 (Run #가 있는 C열 기준)
             col_c_values = self.sheet.col_values(3)
             next_row = len(col_c_values) + 1
-            
+
             # 헤더가 5행까지 있으므로, 데이터는 최소 6행부터 시작해야 함
             if next_row < 6:
                 next_row = 6
-            
-            range_label = f"B{next_row}:R{next_row}"
-            self.sheet.update(range_label, [row], value_input_option='USER_ENTERED')
-            
+
+            batch_data = [
+                {'range': f'{col}{next_row}', 'values': [[val]]}
+                for col, val in ai_columns.items()
+                if val != "" and val is not None
+            ]
+            if batch_data:
+                self.sheet.batch_update(batch_data, value_input_option='USER_ENTERED')
+
             return f"✅ 새 Run 로그 추가 완료 (Run: {run_num}, Row: {next_row})"
         except Exception as e:
             raise RuntimeError(f"로그 추가 실패: {str(e)}") from e
@@ -248,9 +266,9 @@ class RunLogTool(BaseTool):
     _HEADER_ROW = 5
     _READ_COLUMNS = {
         2: "Program", 3: "Run #", 4: "Events", 5: "Start", 6: "End",
-        7: "HV DRC", 8: "HV Aux", 9: "Pos H", 10: "Pos V",
-        11: "Pos Rot", 12: "Pos Tilt", 13: "Trigger", 14: "Beam Type",
-        15: "Beam Energy", 16: "Beam Rate", 17: "Config", 18: "Notes",
+        7: "Duration", 8: "HV DRC", 9: "HV Aux", 10: "Pos H", 11: "Pos V",
+        12: "Pos Rot", 13: "Pos Tilt", 14: "Trigger", 15: "Beam Type",
+        16: "Beam Energy", 17: "Rate", 18: "Config", 19: "Notes",
     }
 
     def _read_row(self, params: Dict[str, Any]) -> str:
@@ -282,13 +300,17 @@ class RunLogTool(BaseTool):
     # Column name → (sheet column index, display label)
     UPDATABLE_COLUMNS = {
         "program":       (2,  "Program"),
-        "notes":         (18, "Notes"),
-        "config":        (17, "Config"),
-        "beam_energy":   (15, "Beam Energy"),
-        "beam_type":     (14, "Beam Type"),
-        "trigger_setup": (13, "Trigger Setup"),
-        "hv_drc":        (7,  "HV DRC"),
-        "hv_aux":        (8,  "HV Aux"),
+        "evts":          (4,  "Events"),
+        "end_time":      (6,  "End"),
+        "duration":      (7,  "Duration"),
+        "notes":         (19, "Notes"),
+        "config":        (18, "Config"),
+        "beam_energy":   (16, "Beam Energy"),
+        "beam_type":     (15, "Beam Type"),
+        "trigger_setup": (14, "Trigger Setup"),
+        "rate":          (17, "Rate"),
+        "hv_drc":        (8,  "HV DRC"),
+        "hv_aux":        (9,  "HV Aux"),
     }
 
     def _update_row(self, params: Dict[str, Any]) -> str:

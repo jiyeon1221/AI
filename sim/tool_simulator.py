@@ -21,7 +21,8 @@ class ToolSimulator:
         self._lock = threading.Lock()
         self._run_counter = 99_000
         self._motor_x = 0.0
-        self._hv: Dict[str, float] = {"MCP-C": 775.0, "MCP-S": 775.0}
+        # 채널명(예: T5C/T5S) → V0Set. 미설정 채널은 hv_status에서 775.0 기본값.
+        self._hv: Dict[str, float] = {}
         self._hodoscope_hv = 1200.0
         self._adc_params: Dict[str, Dict[str, float]] = {}
 
@@ -90,13 +91,15 @@ class ToolSimulator:
         return self._emit(lines, line_callback)
 
     def hv_equalization_start(self, target_c: float, target_s: float, tower: str) -> str:
+        from tools.hv_equalization_tool import _session_manager
+        _session_manager.start_session("default", target_c, target_s, tower)
         return (
             f"🔬 [SIM] HV Equalization session started\n"
             f"   Tower: {tower} | Target ADC C={target_c}, S={target_s}"
         )
 
     def hv_status(self, channels=None) -> str:
-        ch_list = channels if isinstance(channels, list) else ["MCP-C", "MCP-S"]
+        ch_list = channels if isinstance(channels, list) and channels else []
         lines = ["📊 [SIM] HV Status Query"]
         for ch in ch_list:
             v = self._hv.get(ch, 775.0)

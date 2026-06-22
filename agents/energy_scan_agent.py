@@ -12,7 +12,7 @@ import tools.motor_control_tool as motor
 
 from .base_agent import BaseAgent
 sys.path.append(str(Path(__file__).parent.parent))
-from config import AGENT_MODELS
+from config import AGENT_MODELS, MSG_PLOT_CONFIRM
 
 
 class EnergyScanAgent(BaseAgent):
@@ -57,7 +57,9 @@ class EnergyScanAgent(BaseAgent):
             "tower": tower,
             "position": position,
             "daq_config": daq_config,
-            
+            "t5_x": self.t5_x,
+            "t5_y": self.t5_y,
+
             "energy_config": {
                 energy: {
                     "target_events": events,
@@ -68,11 +70,11 @@ class EnergyScanAgent(BaseAgent):
                 }
                 for energy, events in self._init_energy_config.items()
             },
-            
+
             "scan_order": sorted(list(self._init_energy_config.keys())),
             "current_energy": None,
             "current_energy_idx": 0,
-            
+
             "start_time": datetime.now().isoformat(),
             "plot_method": "PeakADC",
             "plot_max_event": None,
@@ -175,6 +177,7 @@ When ALL energies are completed, the SYSTEM sends the completion message and end
         lines.append(f"T5 Position: x={self.t5_x:.3f}, y={self.t5_y:.3f}, rot=1.5, tilt=1.0")
         lines.append(f"x_moved: {self.state.get('x_moved', False)}")
         lines.append(f"y_confirmed: {self.state.get('y_confirmed', False)}")
+        lines.append(f"needs_plot_confirm: {self.state.get('needs_plot_confirm', False)}")
         if self.state['position']:
             lines.append(f"Position: {self.state['position']}")
         lines.append("")
@@ -224,6 +227,7 @@ When ALL energies are completed, the SYSTEM sends the completion message and end
             )
         return (
             f"Phase: {phase} | Energy: {current_energy} GeV ({idx}/{total}) | "
+            f"needs_plot_confirm=False — DO NOT output plot confirmation. "
             f"REQUIRED NEXT: set-beam message (step 2a) then daq_run_tool (step 2b)"
         )
 
@@ -420,6 +424,19 @@ When ALL energies are completed, the SYSTEM sends the completion message and end
     
     # ===== Helper 함수 =====
     
+    def _guard_tool(self, tool_name: str, params) -> Optional[str]:
+        if tool_name == "daq_run_tool" and self.state.get("needs_plot_confirm"):
+            return (
+                f'needs_plot_confirm=True — DAQ already ran. '
+                f'Send: {{"message": "{MSG_PLOT_CONFIRM}"}}'
+            )
+        return None
+
+    def _guard_ai_message(self, message: str) -> Optional[str]:
+        if MSG_PLOT_CONFIRM in message and not self.state.get("needs_plot_confirm"):
+            return f"needs_plot_confirm=False — DO NOT send plot confirmation. {self._get_step_hint()}"
+        return None
+
     # Fields the LLM must not overwrite.
     # - init-only config: tower, daq_config, start_time, plot_method, plot_max_event
     # - code-owned bookkeeping (driver/_on_user_input/_execute_tool set these): x_moved,

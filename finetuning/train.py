@@ -101,12 +101,13 @@ AGENT_DEFAULTS: dict[str, dict] = {
     },
     "brain": {
         "data_file": "brain_data.json",
-        "epochs":    10,
+        "epochs":    4,
         "lora_r":    32,
         "lora_alpha":64,
-        "lr":        1e-4,
-        "batch":     2,
-        "grad_acc":  16,
+        "lr":        5e-5,
+        "batch":     4,
+        "grad_acc":  8,
+        "decision_weight": 3.0,
     },
 }
 
@@ -308,9 +309,11 @@ def finetune(agent_key: str, cfg: dict) -> None:
     )
 
     # 1. Dataset
-    dataset = load_dataset("json", data_files=data_path)["train"].train_test_split(
-        test_size=0.1, seed=42
-    )
+    raw = load_dataset("json", data_files=data_path)["train"]
+    if cfg.get("max_samples"):
+        raw = raw.shuffle(seed=42).select(range(min(cfg["max_samples"], len(raw))))
+        logger.info(f"  max_samples={cfg['max_samples']} (테스트 모드)")
+    dataset = raw.train_test_split(test_size=0.1, seed=42)
     logger.info(f"  Train: {len(dataset['train'])}  /  Val: {len(dataset['test'])}")
 
     # 2. Tokenizer
@@ -461,7 +464,8 @@ def build_cfg(agent_key: str, args: argparse.Namespace) -> dict:
         "lr":              args.lr       if args.lr       is not None else d["lr"],
         "batch":           args.batch    if args.batch    is not None else d["batch"],
         "grad_acc":        args.grad_acc if args.grad_acc is not None else d["grad_acc"],
-        "decision_weight": 5.0,
+        "decision_weight": d.get("decision_weight", 5.0),
+        "max_samples":     getattr(args, "max_samples", None),
     }
 
 
@@ -482,8 +486,9 @@ def main():
     parser.add_argument("--grad_acc", type=int,   default=None, help="gradient accumulation steps")
     parser.add_argument("--lora_r",   type=int,   default=None, help="LoRA rank")
     parser.add_argument("--alpha",    type=int,   default=None, help="LoRA alpha")
-    parser.add_argument("--data",     type=str,   default=None, help="데이터 파일 경로")
-    parser.add_argument("--out",      type=str,   default=None, help="모델 출력 경로")
+    parser.add_argument("--data",        type=str,   default=None, help="데이터 파일 경로")
+    parser.add_argument("--out",         type=str,   default=None, help="모델 출력 경로")
+    parser.add_argument("--max-samples", type=int,   default=None, help="데이터셋 최대 샘플 수 (테스트용)")
     args = parser.parse_args()
 
     agents = list(AGENT_DEFAULTS.keys()) if args.agent == "all" else [args.agent]

@@ -1,7 +1,15 @@
 /* ── WebSocket ─────────────────────────────────────────────── */
 let ws = null;
 let awaitingInput = false;   // true when agent is blocked on get_input()
+let _awaitingInterrupted = false;  // user sent a message while awaitingInput was true
+let _lastAgentMsg = null;          // {text, isBrain} — last AI bubble before awaiting_input
+
+/* ── Command history (CLI-style up/down navigation) ────────── */
+const _cmdHistory = [];
+let _histIdx = -1;       // -1 = not browsing history
+let _histDraft = '';     // saves current draft when user starts browsing
 let activeAgent = null;
+let _pendingAdhocClear = false;   // cleared on next popup open after user sends a message
 
 function connectWS() {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -55,6 +63,7 @@ function handleMessage(msg) {
 
     case 'tool_output':
       if (isBrain) {
+        openAdhoc();
         adhocAppendToolOutput(msg.content);
       } else {
         appendToolOutput(msg.content);
@@ -63,7 +72,7 @@ function handleMessage(msg) {
 
     case 'plot':
       if (isBrain) {
-        adhocAppendPlot(msg.filename);
+        adhocAppendPlot(msg.filename);   // adhocAppendPlot calls openAdhoc internally
       } else {
         appendPlot(msg.filename);
       }
@@ -71,6 +80,7 @@ function handleMessage(msg) {
 
     case 'html_content':
       if (isBrain) {
+        openAdhoc();
         adhocAppendHtml(msg.content);
       } else {
         appendHtml(msg.content);
@@ -79,21 +89,28 @@ function handleMessage(msg) {
 
     case 'dqm_canvases':
       if (isBrain) {
+        openAdhoc();
         adhocDrawDqmCanvases(msg.base_prefix, msg.canvases);
       }
       break;
 
+    case 'adhoc_clarify':
+      showClarifyInChat(msg.question || '');
+      break;
+
     case 'adhoc_confirm':
-      adhocShowConfirm(msg.preview || '', msg.tool || '');
+      adhocShowConfirm(msg.preview || '', msg.tool || '', !!msg.scenario_running);
       break;
 
     case 'awaiting_input':
       awaitingInput = true;
+      _lastAgentMsg = _pendingAgentMsg;
       addCompleteButton();
       break;
 
     case 'awaiting_hv_confirm':
       awaitingInput = true;
+      _lastAgentMsg = _pendingAgentMsg;
       addHvConfirmButtons();
       break;
 
@@ -155,6 +172,14 @@ function addCompleteButton() {
   removeCompleteButtons();   // only one at a time
   const row = document.createElement('div');
   row.className = 'complete-row';
+
+  if (_awaitingInterrupted && _lastAgentMsg) {
+    _awaitingInterrupted = false;
+    appendAI(_lastAgentMsg.text, _lastAgentMsg.isBrain);
+  } else {
+    _awaitingInterrupted = false;
+  }
+
   const btn = document.createElement('button');
   btn.className = 'inline-complete-btn';
   btn.textContent = '✔ 완료';
@@ -172,6 +197,13 @@ function addHvConfirmButtons() {
   removeCompleteButtons();
   const row = document.createElement('div');
   row.className = 'complete-row hv-confirm-row';
+
+  if (_awaitingInterrupted && _lastAgentMsg) {
+    _awaitingInterrupted = false;
+    appendAI(_lastAgentMsg.text, _lastAgentMsg.isBrain);
+  } else {
+    _awaitingInterrupted = false;
+  }
 
   const doneBtn = document.createElement('button');
   doneBtn.className = 'inline-complete-btn';
@@ -232,10 +264,16 @@ function sendText() {
   const input = document.getElementById('chat-input');
   const text = input.value.trim();
   if (!text) return;
+  // Save to history (avoid duplicate consecutive entries)
+  if (_cmdHistory[0] !== text) _cmdHistory.unshift(text);
+  _histIdx = -1;
+  _histDraft = '';
   input.value = '';
+  _pendingAdhocClear = true;   // next popup open will clear previous results
   appendUserBubble(text);
   send({ type: 'user_input', content: text });
   // If agent was waiting, remove the inline 완료 button too
+  if (awaitingInput) _awaitingInterrupted = true;
   removeCompleteButtons();
   awaitingInput = false;
 }
@@ -290,7 +328,10 @@ function clearChat()       { chatScroll().innerHTML = ''; }
 function clearAdhoc()      { adhocScroll().innerHTML = ''; }
 
 /* ── DOM helpers ───────────────────────────────────────────── */
+let _pendingAgentMsg = null;  // last AI message seen, candidate for re-display
+
 function appendAI(text, isBrain = false) {
+  _pendingAgentMsg = { text, isBrain };
   const div = document.createElement('div');
   div.className = isBrain ? 'ai-bubble brain-bubble' : 'ai-bubble';
   if (isBrain) {
@@ -305,6 +346,55 @@ function appendAI(text, isBrain = false) {
   chatScroll().appendChild(div);
   trimContainer(chatScroll(), MAX_CHAT_NODES);
   scrollBottom(chatScroll());
+}
+
+/* ── Inline clarify (AI message form in chat) ─────────────── */
+function showClarifyInChat(question) {
+  const div = document.createElement('div');
+  div.className = 'ai-bubble brain-bubble clarify-inline';
+
+  const qLine = document.createElement('div');
+  const tag = document.createElement('span');
+  tag.className = 'brain-tag';
+  tag.textContent = '추가 정보 필요';
+  qLine.appendChild(tag);
+  qLine.appendChild(document.createTextNode(' ' + question));
+  div.appendChild(qLine);
+
+  const row = document.createElement('div');
+  row.className = 'clarify-inline-row';
+
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'clarify-inline-input';
+  input.placeholder = '답변을 입력하세요...';
+
+  const btn = document.createElement('button');
+  btn.className = 'clarify-inline-send';
+  btn.textContent = '전송';
+
+  const submit = () => {
+    const text = input.value.trim();
+    if (!text) return;
+    input.disabled = true;
+    btn.disabled = true;
+    appendUserBubble(text);
+    send({ type: 'user_input', content: text });
+  };
+
+  btn.onclick = submit;
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); submit(); }
+  });
+
+  row.appendChild(input);
+  row.appendChild(btn);
+  div.appendChild(row);
+
+  chatScroll().appendChild(div);
+  trimContainer(chatScroll(), MAX_CHAT_NODES);
+  scrollBottom(chatScroll());
+  setTimeout(() => input.focus(), 50);
 }
 
 function appendUserBubble(text) {
@@ -435,11 +525,14 @@ function scrollBottom(el) { _scrollTargets.add(el); }
 /* ── Ad-hoc result popup ─────────────────────────────────────── */
 function adhocScroll() { return document.getElementById('adhoc-scroll'); }
 
-function openAdhoc() {
+function openAdhoc(clearContent = false) {
   const overlay = document.getElementById('adhoc-overlay');
-  if (!overlay.classList.contains('open')) {
-    // Clear previous results when opening fresh
+  if (_pendingAdhocClear) {
     adhocScroll().innerHTML = '';
+    _pendingAdhocClear = false;
+  }
+  if (!overlay.classList.contains('open')) {
+    if (clearContent) adhocScroll().innerHTML = '';
     overlay.classList.add('open');
   }
 }
@@ -447,6 +540,37 @@ function openAdhoc() {
 function closeAdhoc() {
   document.getElementById('adhoc-overlay').classList.remove('open');
 }
+
+/* ── Clarify popup ─────────────────────────────────────────── */
+function showClarifyPopup(question) {
+  document.getElementById('clarify-question').textContent = question;
+  document.getElementById('clarify-input').value = '';
+  document.getElementById('clarify-overlay').classList.add('open');
+  setTimeout(() => document.getElementById('clarify-input').focus(), 50);
+}
+
+function closeClarify() {
+  document.getElementById('clarify-overlay').classList.remove('open');
+}
+
+function sendClarify() {
+  const input = document.getElementById('clarify-input');
+  const text = input.value.trim();
+  if (!text) return;
+  closeClarify();
+  appendUserBubble(text);
+  send({ type: 'user_input', content: text });
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  const clarifyInput = document.getElementById('clarify-input');
+  if (clarifyInput) {
+    clarifyInput.addEventListener('keydown', e => {
+      if (e.key === 'Enter') sendClarify();
+      if (e.key === 'Escape') closeClarify();
+    });
+  }
+});
 
 function adhocAppendToolOutput(text, isError = false) {
   openAdhoc();
@@ -485,7 +609,7 @@ function appendHtml(html) {
   scrollBottom(right);
 }
 
-function adhocShowConfirm(preview, _tool) {
+function adhocShowConfirm(preview, _tool, scenarioRunning = false) {
   openAdhoc();
   const scroll = adhocScroll();
 
@@ -514,6 +638,7 @@ function adhocShowConfirm(preview, _tool) {
   yesBtn.onclick = () => {
     send({ type: 'adhoc_confirm', confirmed: true });
     card.remove();
+    if (!scenarioRunning) closeAdhoc();
   };
 
   const noBtn = document.createElement('button');
@@ -522,6 +647,7 @@ function adhocShowConfirm(preview, _tool) {
   noBtn.onclick = () => {
     send({ type: 'adhoc_confirm', confirmed: false });
     card.remove();
+    if (!scenarioRunning) closeAdhoc();
   };
 
   btnRow.appendChild(yesBtn);
@@ -1058,6 +1184,36 @@ async function _pollMotorPosition() {
 // Poll immediately on load, then every 10 seconds
 _pollMotorPosition();
 setInterval(_pollMotorPosition, 10000);
+
+/* ── Chat input: Enter / Up / Down key handling ─────────────── */
+(function () {
+  const input = document.getElementById('chat-input');
+  if (!input) return;
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      sendText();
+      return;
+    }
+    if (e.key === 'ArrowUp') {
+      if (_cmdHistory.length === 0) return;
+      e.preventDefault();
+      if (_histIdx === -1) _histDraft = input.value;   // save draft
+      _histIdx = Math.min(_histIdx + 1, _cmdHistory.length - 1);
+      input.value = _cmdHistory[_histIdx];
+      // Move cursor to end
+      requestAnimationFrame(() => { input.selectionStart = input.selectionEnd = input.value.length; });
+      return;
+    }
+    if (e.key === 'ArrowDown') {
+      if (_histIdx === -1) return;
+      e.preventDefault();
+      _histIdx -= 1;
+      input.value = _histIdx === -1 ? _histDraft : _cmdHistory[_histIdx];
+      requestAnimationFrame(() => { input.selectionStart = input.selectionEnd = input.value.length; });
+    }
+  });
+})();
 
 /* ── Init ──────────────────────────────────────────────────── */
 _updateSoundBtn();

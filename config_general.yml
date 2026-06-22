@@ -5,43 +5,44 @@ Motor:
   Speed: 10.0
   Acc: 100000
   Dec: 100000
-  EZSBinary: /Users/yhep/autoTB/EZSmotor/azd_kren
+  EZSBinary: /Users/yhep/AI/CERN2026/EZSmotor/azd_kren
   UnitScale: 1.0
 
-BaseDirectory: "/Volumes/SSD_8TB"
-Mapping: "/Users/yhep/autoTB/DQM/mapping/KEK_TB2026May_MCP_V5_2026May24.root"
+BaseDirectory: "/Volumes/yhep/scratch/YUdaq"
+Mapping: "/Users/yhep/AI/CERN2026/DQM/mapping/toymapping.root"
 
 # ===== 경로 설정  =====
 Paths:
   RunNumberFile: "/Volumes/yhep/scratch/notice/test/TB_daq/runnum.txt"
-  JsonKeyFile: "/Users/yhep/autoTB/logging/auto-logging-486908-9688f3064ef9.json"
-  SpreadsheetId: "1V28RNHiscra5_y1kzlodzq1DiIw76fAdDkj-t9tzf1U"
+  JsonKeyFile: "/Users/yhep/AI/CERN2026/logging/auto-logging-486908-9688f3064ef9.json"
+  SpreadsheetId: "1ExfjnGbRvupQD0ZbTTl6NOWP7drRhgioPmzxUoFwuA8"
+
   DaqWorkDir: "/Users/yhep/scratch/notice/test/TB_daq"
   DaqScript: "/Users/yhep/scratch/notice/test/TB_daq/run_all_KEK.sh"
-  NoticeBase: "/Volumes/yhep/scratch/notice"
-  KillMeFile: "/Volumes/yhep/scratch/notice/test/TB_daq/KILLME"
+  NoticeBase: "/Users/yhep/scratch/notice"
+  KillMeFile: "/Users/yhep/scratch/notice/test/TB_daq/KILLME"
 
-  DqmDir: "/Users/yhep/autoTB/DQM"
+  DqmDir: "/Users/yhep/AI/CERN2026/DQM"
 
   HodoscopeSetFile: "/Volumes/yhep/scratch/notice/test/TB_daq/config/setup/set_JBNU_DAQ_21.txt"
   DaqLogDir: "/Volumes/yhep/scratch/notice/test/TB_daq/log"
 
 # ===== Mac Studio SSH (LAN connection) =====
 StudioSSH:
-  Host: "192.168.1.4"
+  Host: "192.168.0.11"
   User: "yhep"
   Password: "rhk353"
 
 # ===== HV SSH =====
 HV:
   SSH:
-    Host: "192.168.1.10"
-    Port: 22
+    Host: "165.132.25.82"
+    Port: 1234
     Username: "yoolab"
     Password: "37326"
   Paths:
-    WrapperWorkDir: "/home/yoolab/Downloads/CAENHV/SY5527/CAENHVWrapper/HVWrapperDemo"
-    ConfigFullPath: "/home/yoolab/Downloads/CAENHV/SY5527/CAENHVWrapper/config/config.txt"
+    WrapperWorkDir: "/home/yoolab/Downloads/CAENHV/SY4527/CAENHVWrapper/HVWrapperDemo"
+    ConfigFullPath: "/home/yoolab/Downloads/CAENHV/SY4527/CAENHVWrapper/config/config.txt"
 
 # ===== Position Scan 결과 (T5 기준 절대 좌표, mm) =====
 PositionScan:

@@ -376,31 +376,56 @@ async def api_hv_hodoscope():
 
 
 class HvSetRequest(BaseModel):
-    command: str           # "voltage" | "on" | "off"
+    command: str           # "voltage" | "on" | "off" | "i0set" | "svmax" | "rup" | "rdown" | "name"
     channels: object       # str | list
-    voltage: float = None  # required when command == "voltage"
+    voltage: float = None
+    current: float = None
+    svmax: float = None
+    rup: float = None
+    rdown: float = None
+    name: str = None
+
+
+# HV 명령을 직렬화 — 동시에 여러 SSH 연결이 열리지 않도록
+_hv_cmd_lock = asyncio.Lock()
 
 
 @app.post("/api/hv/set")
 async def api_hv_set(req: HvSetRequest):
-    """Apply voltage / on / off to specified channels via HVControlTool.
-
-    Body JSON:
-      { "command": "voltage", "channels": ["T1C","T2C"], "voltage": 1500.0 }
-      { "command": "on",      "channels": "all" }
-      { "command": "off",     "channels": ["TRIG1","TRIG2"] }
-    """
-    try:
-        tool = HVControlTool()
-        params: dict = {"command": req.command, "channels": req.channels}
-        if req.command == "voltage":
-            if req.voltage is None:
-                return JSONResponse({"ok": False, "error": "voltage 값이 필요합니다"}, status_code=400)
-            params["voltage"] = req.voltage
-        result = tool.execute(params)
-        return {"ok": True, "output": result}
-    except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+    async with _hv_cmd_lock:
+        try:
+            tool = HVControlTool()
+            params: dict = {"command": req.command, "channels": req.channels}
+            if req.command == "voltage":
+                if req.voltage is None:
+                    return JSONResponse({"ok": False, "error": "voltage 값이 필요합니다"}, status_code=400)
+                params["voltage"] = req.voltage
+            if req.command == "i0set":
+                if req.current is None:
+                    return JSONResponse({"ok": False, "error": "current 값이 필요합니다"}, status_code=400)
+                params["command"] = "current"
+                params["current"] = req.current
+            if req.command == "svmax":
+                if req.svmax is None:
+                    return JSONResponse({"ok": False, "error": "svmax 값이 필요합니다"}, status_code=400)
+                params["svmax"] = req.svmax
+            if req.command == "rup":
+                if req.rup is None:
+                    return JSONResponse({"ok": False, "error": "rup 값이 필요합니다"}, status_code=400)
+                params["rup"] = req.rup
+            if req.command == "rdown":
+                if req.rdown is None:
+                    return JSONResponse({"ok": False, "error": "rdown 값이 필요합니다"}, status_code=400)
+                params["rdown"] = req.rdown
+            if req.command == "name":
+                if not req.name:
+                    return JSONResponse({"ok": False, "error": "name 값이 필요합니다"}, status_code=400)
+                params["name"] = req.name
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(None, tool.execute, params)
+            return {"ok": True, "output": result}
+        except Exception as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
 
 @app.get("/api/hv/expert-metrics")
@@ -1110,14 +1135,30 @@ async def websocket_endpoint(ws: WebSocket):
                         # Brain messages: flush scenario buffer first,
                         # then send immediately WITH source tag preserved
                         await flush_tool()
+
+                        out_msg = msg
+                        mtype = msg.get("type")
+                        # adhoc_clarify: always send as-is — JS showClarifyInChat
+                        # handles it with inline input in both running/idle states.
+                        if mtype == "adhoc_confirm":
+                            # Tell JS whether scenario is running so it can
+                            # close the popup after confirm when it's not
+                            out_msg = {**msg, "scenario_running": runner.is_running}
+                        elif mtype in ("tool_output", "plot", "html_content"):
+                            # When no scenario running, strip brain source so JS
+                            # routes result to right panel instead of popup
+                            if not runner.is_running:
+                                out_msg = {k: v for k, v in msg.items()
+                                           if k != "source"}
+
                         try:
-                            await ws.send_json(msg)
+                            await ws.send_json(out_msg)
                         except Exception:
                             pass
                         # After the brain's final ai_message, if the scenario
                         # agent is still waiting for confirmation, re-show
                         # the appropriate button(s).
-                        if (msg.get("type") == "ai_message"
+                        if (out_msg.get("type") == "ai_message"
                                 and _cm[0]
                                 and runner.waiting_flag.is_set()):
                             try:
@@ -1192,7 +1233,7 @@ async def websocket_endpoint(ws: WebSocket):
                         elif _hv_cm[0]:
                             # HV modify mode: free text → scenario (not Brain)
                             runner.send_input(content)
-                        elif _cm[0] and runner.brain_ready:
+                        elif _cm[0] and runner.brain_ready and content not in ("retry", "skip"):
                             # 완료 button was shown → free text is an ad-hoc request
                             runner.send_adhoc(content)
                         else:
@@ -1306,6 +1347,12 @@ async def websocket_endpoint(ws: WebSocket):
             elif msg_type == "adhoc_confirm":
                 confirmed = bool(data.get("confirmed", False))
                 runner.send_confirm(confirmed)
+
+            # ── Clarification reply (from clarify popup input) ─────────────
+            elif msg_type == "clarify_reply":
+                content = data.get("content", "").strip()
+                if content:
+                    runner.send_clarify(content)
 
             # ── Kill current DAQ run ───────────────────────────────────────
             elif msg_type == "kill_run":

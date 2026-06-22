@@ -1,13 +1,5 @@
 #!/usr/bin/env python3
-"""
-BrainAgent
-----------
-Background agent that handles ad-hoc user requests while a scenario agent
-is running.  Takes natural language, infers the right tool + params via a
-fine-tuned Qwen2.5-1.5B, and executes it.
-
-Designed to stay loaded in memory at all times (server start → server stop).
-"""
+"""BrainAgent — 자연어 → tool JSON 변환 후 실행. 서버 시작부터 종료까지 상주."""
 
 import json
 import re
@@ -21,7 +13,6 @@ from agents.base_agent import BaseAgent
 from agents.io_handler import WebSocketIO
 
 
-# Map tool names to shared lock keys.  None means no lock needed.
 TOOL_LOCK_MAP = {
     "daq_run": "daq",
     "dqm_plot": None,
@@ -35,8 +26,7 @@ TOOL_LOCK_MAP = {
     "hodoscope_hv_write": None,
 }
 
-# Tools that require user confirmation before execution.
-TOOLS_NEED_CONFIRM = {"hv_write", "hodoscope_hv_write", "motor_move"}
+TOOLS_NEED_CONFIRM = {"daq_run", "hv_write", "hodoscope_hv_write", "motor_move"}
 
 
 
@@ -55,35 +45,30 @@ Available tools:
   Read:   params: {"command": "read", "run_num": int}
   Update: params: {"command": "update", "run_num": int, "<column>": "<value>"}
   Updatable columns: program, notes, config, beam_energy, beam_type, trigger_setup, hv_drc, hv_aux
-- hv_read: Read current HV status. params: {"command": "status"} (optional: "channels": "all" | list)
-- hv_write: Change HV voltage or turn channels on/off. User confirmation will be asked before execution.
-  Voltage: {"command": "voltage", "channels": <channel_spec>, "voltage": <V as float>}
-  On/off:  {"command": "on"|"off", "channels": <channel_spec>}
-  channel_spec options:
-    - Single channel: ["T1C"], ["TRIG1"], ["MCP-S"]
-    - Multiple channels: ["T1C", "T2C"], ["TRIG1", "TRIG2"]
-    - All DRC channels: "all"  ← use ONLY when user says 전체/모든/전 채널/all channels
-    - S-side only: ["T1S","T2S","T3S","T4S","T5S","T6S","T7S","T8S","T9S"]
-    - C-side only: ["T1C","T2C","T3C","T4C","T5C","T6C","T7C","T8C","T9C"]
-    - Even channels: "0,2,4,6,8,10,12,14,16,18,20,22"
-    - Odd channels: "1,3,5,7,9,11,13,15,17,19,21,23"
-    - Channel range: "0-8"
-  Named channels: T1C/T1S~T9C/T9S (DRC towers), TRIG1/TRIG2 (trigger PMTs), MCP-S/MCP-C (MCP PMTs)
-- motor_move: Move X-axis motor to an absolute position.
-  params: {"x": <mm>}
-  Always absolute — specify the target position in mm.
-- motor_status: Read current motor position. params: {} (no params needed).
-  Use when user asks for current position, "지금 위치", "position status", "pos", "현재 위치 확인" etc.
-- motor_alarm_reset: Reset motor alarm/fault after hitting position limit or fault state.
-  params: {} (no params needed)
-  Use when: motor is locked, won't move, alarm/fault triggered, "알람", "락", "에러", "범위 초과", "안움직여" after a failed move.
-- hodoscope_hv_read: Read current hodoscope HV setting from the DAQ set file.
-  params: {"command": "read"}
-  Returns a single value (the 'hv' line in the set file that applies to all 4 hodoscope channels).
-- hodoscope_hv_write: Change hodoscope HV in the DAQ set file. User confirmation required.
-  Set voltage: {"command": "write", "value": <V as float>}
-  Turn off:    {"command": "write", "value": 0.0}
-  Channel names: N/A — set file has one 'hv' value shared by all 4 hodoscope channels.
+- hv_read: Read current HV status (CAEN HV + Hodoscope both). params: {"command": "status"}
+  Use for ANY HV status query including hodoscope queries.
+- hv_write: Change CAEN HV voltage or turn channels on/off. User confirmation required.
+  Voltage: {"command": "voltage", "channels": <ch_spec>, "voltage": <V as float>}
+  On/off:  {"command": "on"|"off", "channels": <ch_spec>}
+  Valid channel names (ONLY these): T1C, T1S, T2C, T2S, T3C, T3S, T4C, T4S, T5C, T5S,
+    T6C, T6S, T7C, T7S, T8C, T8S, T9C, T9S, TRIG1, TRIG2, MCP-S, MCP-C
+  Channel spec (<ch_spec>) options:
+    "all"          — 전체 채널 (ONLY when user says 전체/모든/all)
+    "even"         — 짝수 번호 채널 전체
+    "odd"          — 홀수 번호 채널 전체
+    "N-M"          — ch 번호 N~M 범위 (예: "0-8", "2-12")
+    "N,M,K"        — ch 번호 목록 (예: "1,2,5,6")
+    ["T1C","T2C"]  — 이름 목록
+    "slot:S"       — 슬롯 S 전체
+    "slot:S:even/odd" — 슬롯 S 짝/홀수
+- motor_move: Move X-axis motor to an absolute position. params: {"x": <mm>}
+  User confirmation required.
+- motor_status: Read current motor position. params: {}
+- motor_alarm_reset: Reset motor alarm/fault. params: {}
+- hodoscope_hv_read: Read hodoscope HV from set file. params: {"command": "read"}
+- hodoscope_hv_write: Change hodoscope HV. ONLY when user explicitly says "호도스코프"/"호도"/"hodoscope".
+  params: {"command": "write", "value": <V as float>}  (value: 0.0 to turn off)
+  User confirmation required.
 
 Current experiment state is provided so you can resolve relative references
 like "방금", "이번 런", "지금" to concrete run numbers or energies.
@@ -101,44 +86,27 @@ RULES:
 4. run_log supports both READ and WRITE:
    - VIEW/CHECK a log (확인, 보여줘, 읽어줘) WITHOUT a value → {"command": "read", "run_num": ...}
    - WRITE with column+value (e.g. "프로그램에 EM 추가") → {"command": "update", "run_num": ..., "<column>": "<value>"}
-5. hv_read CAN read. "HV 확인" → use hv_read.
+5. hv_read for ANY HV status. "HV 확인", "HV 상태", "호도스코프 HV 확인" → all use hv_read.
 6. DAQ requires an event count. If the user says "DAQ 돌려줘" without a number, ask how many events.
 7. Channel names like T1C, T1S, T2C, ..., T9S are HV channels — NOT log columns.
-   "T9S 전압 100으로", "T1C 1500V로 수정" → hv_write with channels: ["T9S"] or ["T1C"].
+   A SINGLE channel name + voltage → channels: [that single channel].
    ONLY use channels: "all" when the input explicitly says 전체/모든/전 채널/all channels.
-   A SINGLE channel name + voltage ALWAYS means channels: [that single channel].
-8. For hv_write and motor_move, the system asks the user to confirm before execution — you don't need to handle confirmation in your JSON.
-16. "S채널만"/"S만"/"S side"/"S 쪽만" → channels: ["T1S","T2S","T3S","T4S","T5S","T6S","T7S","T8S","T9S"]
-17. "C채널만"/"C만"/"C side"/"C 쪽만"/"체렌코프만" → channels: ["T1C","T2C","T3C","T4C","T5C","T6C","T7C","T8C","T9C"]
-18. "TRIG"/"트리거" without specific number → channels: ["TRIG1","TRIG2"]
-    "MCP" without S/C → channels: ["MCP-S","MCP-C"]
-    "TRIG1" only → channels: ["TRIG1"]   "TRIG2" only → channels: ["TRIG2"]
-19. "짝수 채널"/"even channel" → channels: "0,2,4,6,8,10,12,14,16,18,20,22"
-    "홀수 채널"/"odd channel" → channels: "1,3,5,7,9,11,13,15,17,19,21,23"
-20. "ch0-8"/"채널 0번부터 8번" → channels: "0-8"  (use range format)
-9. "플롯", "그려줘", "그래프", "확인해줘 (run)" → dqm_plot. Default type: full, default method: IntADC.
+8. For daq_run, hv_write, motor_move, and hodoscope_hv_write, the system asks the user to confirm before execution.
+9. "플롯", "그려줘", "그래프" → dqm_plot. Default type: full.
+   Method: ONLY set it when the user explicitly says IntADC/intADC/적분 (→ "IntADC") or PeakADC/peakADC/피크 (→ "PeakADC").
+   If method is not mentioned, respond with tool:none asking "IntADC로 그릴까요, PeakADC로 그릴까요?"
 10. Specific tower/channel (T1, T1-C, T1-S, T5 etc.) → type: single, modules: [name].
-11. "heatmap" or "MCPPMT" mentioned → type: heatmap, modules: ["MCPPMT"]. Always MCPPMT (SiPM not used).
-12. No type/channel hint → type: full.
-13. motor_move — always absolute. Extract the target position in mm from user input.
-    e.g. "100mm로 이동" → {"x": 100.0}, "X축 85.5mm" → {"x": 85.5}
-21. motor_alarm_reset: "모터 알람 리셋", "모터 락 풀어줘", "motor alarm reset", "모터 에러 해제",
-    "모터가 안움직여" (after failed move), "범위 초과 리셋", "fault 풀어줘" → motor_alarm_reset.
-14. hodoscope_hv_read: "호도스코프 HV 확인", "호도 HV 얼마야", "hodoscope HV 읽어줘" → hodoscope_hv_read.
-15. hodoscope_hv_write: "호도스코프 HV X로 설정", "호도 HV X볼트로 바꿔줘", "hodoscope HV 꺼줘" → hodoscope_hv_write.
-    - "꺼줘" / "off" / "0으로" → value: 0.0
-    - "호도스코프 HV"는 set file의 단일 'hv' 라인이며 4채널 공통 적용.
-    - hodoscope_hv_write is in TOOLS_NEED_CONFIRM — system will ask for confirmation.
+11. "heatmap" or "MCPPMT" mentioned → type: heatmap, modules: ["MCPPMT"].
+12. dqm_plot requires run_number. Infer from state (last completed run) if not specified.
+    If truly unknown, ask which run number.
+13. motor_move — always absolute. Extract target position in mm.
+14. hodoscope_hv_write: ONLY when user explicitly says "호도스코프"/"호도"/"hodoscope".
+    "꺼줘" / "off" → value: 0.0
+15. hv_write: for all other HV write requests (not hodoscope).
 """
 
 
 class BrainAgent(BaseAgent):
-    """
-    Lightweight agent for ad-hoc tool dispatch.
-    - Stays loaded in memory (no context-manager cycling)
-    - Single-turn: one request  ->  one tool call  ->  result
-    - Reads scenario agent state (read-only) for context
-    """
 
     def __init__(self, shared_state: Optional[Dict] = None,
                  shared_locks: Optional[Dict[str, threading.Lock]] = None,
@@ -161,13 +129,10 @@ class BrainAgent(BaseAgent):
         self.clarify_queue = clarify_queue or queue.Queue()
         self._last_daq_run: Optional[int] = None  # run number from last brain-initiated DAQ
 
-    # ── BaseAgent abstract methods ───────────────────────────────────────────
-
     def _get_system_prompt(self) -> str:
         return SYSTEM_PROMPT
 
     def _build_state_context(self) -> str:
-        """Summarise the scenario agent's state for context."""
         s = self.shared_state
         lines = []
 
@@ -176,7 +141,6 @@ class BrainAgent(BaseAgent):
         if s.get("current_run"):
             lines.append(f"Current run number: {s['current_run']}")
 
-        # shared_state may use either 'last_run' or 'last_run_number'
         last_run = s.get("last_run") or s.get("last_run_number") or self._last_daq_run
         if last_run:
             lines.append(f"Last completed run: {last_run}")
@@ -193,50 +157,61 @@ class BrainAgent(BaseAgent):
         """Not used — BrainAgent uses handle_request() for single-turn dispatch."""
         pass
 
-    # ── Public API ───────────────────────────────────────────────────────────
-
     def handle_request(self, user_input: str, io: WebSocketIO) -> None:
-        """
-        Process one ad-hoc request end-to-end:
-        1. Build context  (state + user input)
-        2. LLM inference  (tool + params)
-        3. Lock check
-        4. Execute tool
-        5. Send result to UI
-        """
         context = self.build_full_context(current_input=user_input)
 
         io.send_status("BrainAgent 처리 중...")
         decision = self.decide(context)
+        self.log(f"[Brain] tool={decision.get('tool','?')} | params={decision.get('params',{})} | reason={decision.get('reason','')!r} | message={decision.get('message','')!r}")
 
         if "error" in decision:
             io.send_ai_message(f"요청을 이해하지 못했습니다: {decision.get('raw_output', '')[:200]}")
             io.send_status("대기 중")
             return
 
+        self.add_to_history("user", user_input)
+        self.add_to_history("assistant", json.dumps(decision, ensure_ascii=False))
+
         tool_name = decision.get("tool", "none")
         reason = decision.get("reason", "")
 
         if tool_name == "none":
-            msg = decision.get("message", reason or "무엇을 도와드릴까요?")
-            io.send_ai_message(msg)
-            io.send_status("대기 중")
-            return
+            fallback = self._apply_fallback_rules(user_input)
+            if fallback:
+                self.log(f"[Brain] tool:none → fallback: {fallback['tool']}")
+                decision = fallback
+                tool_name = fallback["tool"]
+                reason = fallback.get("reason", "")
+            else:
+                msg = decision.get("message", reason or "무엇을 도와드릴까요?")
+                if not msg or msg.strip().startswith("<"):
+                    msg = "요청을 좀 더 구체적으로 말씀해 주세요."
+                io.output_queue.put({"type": "adhoc_clarify", "question": msg, "source": "brain"})
+                io.send_status("대기 중")
+                return
 
         params = decision.get("params", {})
+
+        # "방금"/"이번"/"last"/"지금" → infer run_number from state instead of asking
+        if tool_name == "dqm_plot" and not params.get("run_number"):
+            if re.search(r'(방금|이번|last|지금)', user_input.lower()):
+                run_num = (self.shared_state.get("last_run")
+                           or self.shared_state.get("last_run_number")
+                           or self._last_daq_run)
+                if run_num:
+                    params["run_number"] = int(run_num)
 
         missing = self._validate_params(tool_name, params)
         if missing:
             _, question = missing
-            io.send_ai_message(question)
+            io.output_queue.put({"type": "adhoc_clarify", "question": question, "source": "brain"})
             io.send_status("대기 중")
             return
 
         if tool_name in TOOLS_NEED_CONFIRM:
             preview = self._format_confirm_preview(tool_name, params)
-            io.send_ai_message(f"{reason}")
-            # Drain any stale confirmation responses
-            while not self.confirm_queue.empty():
+            io.send_ai_message(self._format_dispatch_msg(tool_name, params, reason))
+            while not self.confirm_queue.empty():  # drain stale replies
                 try: self.confirm_queue.get_nowait()
                 except queue.Empty: break
             io.output_queue.put({
@@ -256,7 +231,7 @@ class BrainAgent(BaseAgent):
                 io.send_status("대기 중")
                 return
         else:
-            io.send_ai_message(f"{reason}")
+            io.send_ai_message(self._format_dispatch_msg(tool_name, params, reason))
 
         lock_key = TOOL_LOCK_MAP.get(tool_name)
         lock = self.shared_locks.get(lock_key) if lock_key else None
@@ -276,8 +251,20 @@ class BrainAgent(BaseAgent):
         io.send_status("대기 중")
 
     @staticmethod
+    def _format_dispatch_msg(tool_name: str, params: dict, reason: str) -> str:
+        lines = [f"Tool: {tool_name}"]
+        if params:
+            for k, v in params.items():
+                lines.append(f"  {k}: {v}")
+        if reason:
+            lines.append(reason)
+        return "\n".join(lines)
+
+    @staticmethod
     def _format_confirm_preview(tool_name: str, params: dict) -> str:
-        """Human-readable summary of the action, shown in the confirmation popup."""
+        if tool_name == "daq_run":
+            events = params.get("events", "?")
+            return f"DAQ 실행\n  이벤트 수: {events:,}" if isinstance(events, int) else f"DAQ 실행\n  이벤트 수: {events}"
         if tool_name == "hv_write":
             cmd = params.get("command", "?")
             ch = params.get("channels", "?")
@@ -295,23 +282,19 @@ class BrainAgent(BaseAgent):
         if tool_name == "hodoscope_hv_write":
             cmd = params.get("command", "write")
             v = params.get("value", "?")
-            if float(v) == 0.0:
-                return "Hodoscope HV 끄기\n  value: 0.0 V (off)"
+            try:
+                if float(v) == 0.0:
+                    return "Hodoscope HV 끄기\n  value: 0.0 V (off)"
+            except (ValueError, TypeError):
+                pass
             return f"Hodoscope HV 변경\n  value: {v} V"
         if tool_name == "motor_move":
             x = params.get("x", "?")
             return f"X축 이동\n  목표 위치: {x} mm"
         return f"{tool_name}\n  params: {params}"
 
-    # ── Validation ────────────────────────────────────────────────────────────
-
     @staticmethod
     def _validate_params(tool_name: str, params: dict):
-        """
-        Return (field_key, question) for the first missing required param,
-        or None if all required params are present.
-        field_key is used to parse the clarification answer.
-        """
         if tool_name == "daq_run":
             events = params.get("events")
             if not events or (isinstance(events, (int, float)) and events <= 0):
@@ -319,15 +302,38 @@ class BrainAgent(BaseAgent):
         if tool_name == "dqm_plot":
             if not params.get("run_number"):
                 return ("run_number", "어떤 런 번호의 DQM 플롯을 그릴까요?")
+            if params.get("type") == "single" and not params.get("modules"):
+                return ("modules", "어떤 채널을 그릴까요? (예: T1, T1-C, T1-S)")
         if tool_name == "run_log":
             if not params.get("run_num"):
                 return ("run_num", "어떤 런 번호의 로그를 처리할까요?")
+        if tool_name == "motor_move":
+            if params.get("x") is None:
+                return ("x", "X축 목표 위치를 mm 단위로 알려주세요. (예: 100mm로 이동)")
+        return None
+
+    def _apply_fallback_rules(self, user_input: str) -> Optional[dict]:
+        """모델이 tool:none을 출력했을 때 규칙 기반으로 재시도."""
+        u = user_input.lower()
+
+        # HV status check (English / Korean)
+        if re.search(r'hv.*(status|check)', u) or re.search(r'(hv|고압).*(확인|상태)', u):
+            return {"tool": "hv_read", "params": {"command": "status"}, "reason": "HV 상태 확인"}
+
+        # 방금 / 이번 / last run + plot
+        if re.search(r'(방금|이번|last)', u) and re.search(r'(plot|플롯|그려|그래프)', u):
+            run_num = (self.shared_state.get("last_run")
+                       or self.shared_state.get("last_run_number")
+                       or self._last_daq_run)
+            if run_num:
+                return {"tool": "dqm_plot",
+                        "params": {"run_number": int(run_num), "type": "full"},
+                        "reason": f"Run {run_num} 플롯 (방금 런)"}
+
         return None
 
     def _ask_clarify(self, question: str, io, timeout: int = 120) -> Optional[str]:
-        """Send a clarification request to the popup and wait for the answer."""
-        # Drain stale clarify replies
-        while not self.clarify_queue.empty():
+        while not self.clarify_queue.empty():  # drain stale replies
             try: self.clarify_queue.get_nowait()
             except queue.Empty: break
         io.output_queue.put({"type": "adhoc_clarify", "question": question})
@@ -337,10 +343,7 @@ class BrainAgent(BaseAgent):
         except queue.Empty:
             return None
 
-    # ── Internal ─────────────────────────────────────────────────────────────
-
     def _execute_tool(self, tool_name: str, params: dict, io: WebSocketIO, max_retries: int = 3):
-        """Run the actual tool and send output to the UI. Retries on RuntimeError."""
         last_error = None
         for attempt in range(1, max_retries + 1):
             try:
@@ -401,9 +404,14 @@ class BrainAgent(BaseAgent):
 
                 elif tool_name in ("hv_read", "hv_status"):
                     from tools.hv_control_tool import HVControlTool
+                    from tools.hodoscope_hv_tool import HodoscopeHVTool
                     params.setdefault("command", "status")
-                    result = HVControlTool().execute(params)
-                    io.send_tool_output(result)
+                    result_caen = HVControlTool().execute(params)
+                    try:
+                        result_hodo = HodoscopeHVTool().execute({"command": "read"})
+                    except Exception as e:
+                        result_hodo = f"[Hodoscope HV 읽기 실패: {e}]"
+                    io.send_tool_output(result_caen + "\n\n─────────────────────\n" + result_hodo)
 
                 elif tool_name == "hv_write":
                     from tools.hv_control_tool import HVControlTool
@@ -449,7 +457,7 @@ class BrainAgent(BaseAgent):
                 else:
                     io.send_ai_message(f"알 수 없는 도구: {tool_name}")
 
-                return  # 성공
+                return
 
             except RuntimeError as e:
                 last_error = e
@@ -464,10 +472,8 @@ class BrainAgent(BaseAgent):
         io.send_tool_error(tool_name, str(last_error), max_retries)
 
 
-# ── Background worker loop ───────────────────────────────────────────────────
-
 class _BrainOutputQueue:
-    """Wrapper that tags every message with source='brain' before forwarding."""
+    """모든 메시지에 source='brain'을 태깅해서 output_queue로 전달."""
 
     def __init__(self, real_queue: queue.Queue):
         self._q = real_queue
@@ -495,18 +501,13 @@ def run_brain_thread(
     confirm_queue: Optional[queue.Queue] = None,
     clarify_queue: Optional[queue.Queue] = None,
 ):
-    """
-    Long-running thread that polls adhoc_queue and dispatches requests
-    through BrainAgent.  Shares output_queue with the scenario agent
-    so results appear in the same UI.
-    """
     if confirm_queue is not None:
         brain_agent.confirm_queue = confirm_queue
     if clarify_queue is not None:
         brain_agent.clarify_queue = clarify_queue
     tagged_queue = _BrainOutputQueue(output_queue)
     io = WebSocketIO(
-        input_queue=queue.Queue(),   # BrainAgent doesn't need input back
+        input_queue=queue.Queue(),  # 입력 없음 — BrainAgent는 단방향 dispatch
         output_queue=tagged_queue,
         stop_event=stop_event,
     )

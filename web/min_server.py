@@ -106,22 +106,36 @@ class HvSetRequest(BaseModel):
     command: str
     channels: object
     voltage: float = None
+    current: float = None
+    svmax: float = None
+
+
+_hv_cmd_lock = asyncio.Lock()
 
 
 @app.post("/api/hv/set")
 async def api_hv_set(req: HvSetRequest):
-    """Apply voltage / on / off to specified channels."""
-    try:
-        tool = HVControlTool()
-        params: dict = {"command": req.command, "channels": req.channels}
-        if req.command == "voltage":
-            if req.voltage is None:
-                return JSONResponse({"ok": False, "error": "voltage 값이 필요합니다"}, status_code=400)
-            params["voltage"] = req.voltage
-        result = tool.execute(params)
-        return {"ok": True, "output": result}
-    except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+    async with _hv_cmd_lock:
+        try:
+            tool = HVControlTool()
+            params: dict = {"command": req.command, "channels": req.channels}
+            if req.command == "voltage":
+                if req.voltage is None:
+                    return JSONResponse({"ok": False, "error": "voltage 값이 필요합니다"}, status_code=400)
+                params["voltage"] = req.voltage
+            if req.command == "i0set":
+                if req.current is None:
+                    return JSONResponse({"ok": False, "error": "current 값이 필요합니다"}, status_code=400)
+                params["current"] = req.current
+            if req.command == "svmax":
+                if req.svmax is None:
+                    return JSONResponse({"ok": False, "error": "svmax 값이 필요합니다"}, status_code=400)
+                params["svmax"] = req.svmax
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(None, tool.execute, params)
+            return {"ok": True, "output": result}
+        except Exception as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
 
 @app.get("/api/hv/expert-metrics")

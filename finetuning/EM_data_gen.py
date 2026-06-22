@@ -11,12 +11,16 @@ EnergyScanAgent(energy_scan_agent.py)와 완전히 동일하도록 유지.
 
 import json
 import random
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from config import MSG_PLOT_CONFIRM
 
 MESSAGE_ASK_ENERGY  = "에너지 설정을 입력해주세요.\n예) 1GeV 50000개 2GeV 200000개 5GeV 100000개  또는  1GeV 80000 3GeV 500000 5GeV 300000"
 MESSAGE_X_MOVED     = "X축 자동 이동 완료 ({x:.3f} mm). Y축을 {y:.3f}으로 이동해주세요."
 MESSAGE_ENERGY_SET  = "빔 에너지를 {energy} GeV로 설정해주세요."
-MESSAGE_PLOT_CONFIRM = "데이터 수집 및 Plot 생성이 완료되었습니다. 결과를 확인해주세요."
+MESSAGE_PLOT_CONFIRM = MSG_PLOT_CONFIRM
 MESSAGE_COMPLETE    = "모든 에너지 스캔이 완료되었습니다."
 
 SYSTEM_PROMPT = """You are Energy Scan Agent for test beam experiments.
@@ -99,8 +103,8 @@ When ALL energies are completed, the SYSTEM sends the completion message and end
 
 
 def random_events():
-    """Return a uniformly distributed 3-5 digit integer."""
-    digits = random.randint(3, 5)
+    """Return a uniformly distributed 3-6 digit integer."""
+    digits = random.randint(3, 6)
     return random.randint(10**(digits-1), 10**digits - 1)
 
 
@@ -111,6 +115,7 @@ def _build_state_context(state):
     lines.append(f"T5 Position: x={state['t5_x']:.3f}, y={state['t5_y']:.3f}, rot=1.5, tilt=1.0")
     lines.append(f"x_moved: {state.get('x_moved', False)}")
     lines.append(f"y_confirmed: {state.get('y_confirmed', False)}")
+    lines.append(f"needs_plot_confirm: {state.get('needs_plot_confirm', False)}")
     if state.get("position"):
         lines.append(f"Position: {state['position']}")
     lines.append("")
@@ -168,6 +173,7 @@ def _get_step_hint(state, history):
         )
     return (
         f"Phase: {phase} | Energy: {current_energy} GeV ({idx}/{total}) | "
+        f"needs_plot_confirm=False — DO NOT output plot confirmation. "
         f"REQUIRED NEXT: set-beam message (step 2a) then daq_run_tool (step 2b)"
     )
 
@@ -519,6 +525,27 @@ def main():
         # ── 단일 에너지 (2개) ────────────────────────────────────────────
         ([5],                     [50000],                                   "5GeV 50000개"),
         ([10],                    [1000],                                    "10GeV 1000개"),
+
+        # ── 6자리 이벤트 (100000-999999) — 소에너지 포함 (20개) ─────────
+        ([1, 2, 3],               [100000, 200000, 400000],                  "1gev 100000개 2gev 200000 3gev 400000개"),
+        ([1, 2, 3],               [100000, 200000, 300000],                  "1GeV 100000개 2GeV 200000개 3GeV 300000개"),
+        ([1, 2, 3, 4],            [100000, 200000, 300000, 400000],          "1GeV 100000 2GeV 200000 3GeV 300000 4GeV 400000"),
+        ([1, 2, 3, 4, 5],         [100000, 200000, 300000, 400000, 500000],  "1gev 100000개 2gev 200000개 3gev 300000개 4gev 400000개 5gev 500000개"),
+        ([1, 2, 3, 4, 5],         [100000, 200000, 300000, 400000, 500000],  "1GeV 100000 2GeV 200000 3GeV 300000 4GeV 400000 5GeV 500000"),
+        ([1, 2, 4, 6],            [100000, 200000, 400000, 600000],          "1GeV 100000개 2GeV 200000개 4GeV 400000개 6GeV 600000개"),
+        ([2, 4, 6, 8, 10],        [100000, 200000, 300000, 400000, 500000],  "2GeV 100000 4GeV 200000 6GeV 300000 8GeV 400000 10GeV 500000"),
+        ([1, 3, 5, 10],           [100000, 300000, 500000, 100000],          "1GeV 100000개 3GeV 300000개 5GeV 500000개 10GeV 100000개"),
+        ([1, 2, 3, 4, 5, 6],      [100000, 100000, 100000, 100000, 100000, 100000], "1,2,3,4,5,6GeV 각각 100000개씩"),
+        ([1, 2, 3],               [500000, 500000, 500000],                  "1,2,3GeV 모두 500000개"),
+        ([5, 10, 20],             [100000, 200000, 500000],                  "5GeV 100000개 10GeV 200000개 20GeV 500000개"),
+        ([1, 2, 3, 4, 5],         [200000, 200000, 200000, 200000, 200000],  "1,2,3,4,5GeV 각각 200000개"),
+        ([1, 5, 10, 20],          [100000, 200000, 300000, 500000],          "1gev 100000 5gev 200000 10gev 300000 20gev 500000"),
+        ([1, 2],                  [100000, 200000],                          "1GeV 100000개 2GeV 200000개"),
+        ([1, 2, 3],               [300000, 400000, 500000],                  "1GeV 300000개 2GeV 400000개 3GeV 500000개"),
+        ([10, 20, 30],            [100000, 200000, 300000],                  "10GeV 100000개 20GeV 200000개 30GeV 300000개"),
+        ([1, 2, 3, 4],            [200000, 200000, 400000, 400000],          "1,2GeV 200000개 3,4GeV 400000개"),
+        ([2, 4, 6],               [100000, 200000, 300000],                  "2gev 100000 4gev 200000 6gev 300000"),
+        ([1, 3, 5, 7, 10],        [100000, 100000, 200000, 200000, 300000],  "1,3GeV 100000 5,7GeV 200000 10GeV 300000"),
 
         # ── 넓은 에너지 범위 + 소형 이벤트 (8개) ────────────────────────
         ([1, 10, 50, 100],        [500, 1000, 5000, 10000],                  "1GeV 500개 10GeV 1000개 50GeV 5000개 100GeV 10000개"),

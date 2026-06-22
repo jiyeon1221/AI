@@ -56,7 +56,7 @@ def run_agent_thread(
             )
 
         elif agent_name in ("hv_equalization", "hv_equalization_sim"):
-            _HV_TOWER_ORDER = ["T5"]
+            _HV_TOWER_ORDER = TOWER_ORDER  # T1-T9 전체 순회 (MCP 아님)
 
             def _ask_float(prompt):
                 while True:

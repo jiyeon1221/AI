@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>autoTB Control Panel</title>
-  <link rel="stylesheet" href="/static/style.css?v=20260524a" />
+  <link rel="stylesheet" href="/static/style.css?v=20260619a" />
 </head>
 <body>
 <div id="app">
@@ -22,7 +22,7 @@
     <button class="agent-btn" id="stop-btn"  onclick="stopAgent()" style="display:none">Stop Agent</button>
     <button class="agent-btn" id="kill-btn"  onclick="killRun()">KILL RUN</button>
     <button class="agent-btn" id="hv-check-btn" title="전체 채널 HV 상태 확인">HV Check</button>
-    <button class="agent-btn" onclick="window.open('https://docs.google.com/spreadsheets/d/1V28RNHiscra5_y1kzlodzq1DiIw76fAdDkj-t9tzf1U/edit?gid=0#gid=0','_blank')">Log</button>
+    <button class="agent-btn" onclick="window.open('https://docs.google.com/spreadsheets/d/1ExfjnGbRvupQD0ZbTTl6NOWP7drRhgioPmzxUoFwuA8/edit?gid=1170233028#gid=1170233028','_blank')">Log</button>
     <button class="agent-btn" id="sound-btn" onclick="toggleSound()" title="DAQ 완료 알림음 켜기/끄기">🔔</button>
 
     <div class="sep"></div>
@@ -43,8 +43,7 @@
       <div id="input-area">
         <!-- Free-text input -->
         <div id="text-row">
-          <input id="chat-input" type="text" placeholder="메시지를 입력하세요..."
-                 onkeydown="if(event.key==='Enter') sendText()" />
+          <input id="chat-input" type="text" placeholder="메시지를 입력하세요..." />
           <button id="mic-btn" onclick="toggleVoice()" title="음성 입력">🎤</button>
           <button id="send-btn" onclick="sendText()">전송</button>
         </div>
@@ -80,6 +79,21 @@
 
   </div><!-- /panels -->
 </div><!-- /app -->
+
+<!-- Clarify popup -->
+<div id="clarify-overlay" onclick="closeClarify()">
+  <div id="clarify-panel" onclick="event.stopPropagation()">
+    <div id="clarify-header">
+      <span>💬 추가 정보 필요</span>
+      <span id="clarify-close" onclick="closeClarify()">✕</span>
+    </div>
+    <div id="clarify-question"></div>
+    <div id="clarify-input-row">
+      <input id="clarify-input" type="text" placeholder="답변을 입력하세요..." />
+      <button id="clarify-send-btn" onclick="sendClarify()">전송</button>
+    </div>
+  </div>
+</div>
 
 <!-- Ad-hoc result popup -->
 <div id="adhoc-overlay" onclick="closeAdhoc()">
@@ -122,6 +136,6 @@
 </div>
 
 <script src="/jsroot/jsroot.js"></script>
-<script src="/static/app.js?v=20260524c"></script>
+<script src="/static/app.js?v=20260622a"></script>
 </body>
 </html>
