@@ -98,6 +98,7 @@ After user says "완료":
 4. NEVER include a done channel in channel_values.
 5. ALWAYS use EXACT numbers from state — never invent values.
 6. When CONVERGED (state C=True, S=True), call hv_equalization_done_channel IMMEDIATELY.
+7. All "message" field values MUST be written in Korean (한국어) only. Never use Chinese characters (한자).
 """
 
 

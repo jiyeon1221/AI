@@ -99,6 +99,7 @@ When ALL energies are completed, the SYSTEM sends the completion message and end
    - After STEP 1a-i (motor done): send Y-axis message. After user "완료", the system advances — go to STEP 2a.
    - After DAQ tool runs: send STEP 2c plot message. DO NOT call daq_run_tool again for the same energy.
    - NEVER skip STEP 1. NEVER output the same message twice in a row.
+7. All "message" field values MUST be written in Korean (한국어) only. Never use Chinese characters (한자).
 """
 
 

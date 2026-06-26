@@ -63,6 +63,7 @@ If the request is unclear or you cannot determine a tool, respond:
 {"tool": "none", "message": "<ask the user for clarification>"}
 
 RULES:
+0. All "message" and "reason" field values MUST be written in Korean (한국어) only. Never use Chinese characters (한자).
 1. Output ONLY valid JSON. No markdown, no explanation outside JSON.
 2. Always resolve relative references using the provided state.
 3. For run_log updates, extract column and value from the user's message.
@@ -275,15 +276,9 @@ def _random_single_modules():
 def gen_dqm_plot() -> List[dict]:
     examples = []
 
-    # ── A. full type — explicit run (200) ─────────────────────────────────────
+    # ── A. full type — explicit run, explicit method ───────────────────────────
+    # Only templates with an explicit method keyword (intADC/적분/integral or peakADC/피크/peak)
     full_intadc_tmpl = [
-        # bare run reference
-        "run {r} 그려줘", "run {r} 플랏 보여줘", "run {r} 전부 그려줘",
-        "run {r} 그래프 다 그려줘", "{r}번 런 플랏", "{r} 플랏 보여줘",
-        "run {r} 그래프 보여줘", "{r}번 그려줘", "run {r} 플랏 그려",
-        "{r} 데이터 그려줘", "run {r} 전체 플랏", "{r}번 런 전부 그려",
-        "run {r} plot", "{r} 그래프 전부", "run {r} 다 그려",
-        "run {r} DQM 그려줘", "{r}번 DQM 보여줘", "run {r} DQM plot",
         # intADC explicit
         "{r} intADC 그려줘", "run {r} intADC 보여줘",
         "{r}번 런 intADC 그려줘", "run {r} 적분 그려줘",
@@ -291,11 +286,22 @@ def gen_dqm_plot() -> List[dict]:
         "{r}번 intADC 플랏", "run {r} int ADC 그려줘",
         "{r} integral 그려줘", "run {r} 적분만 그려줘",
         "{r}번 런 적분 그래프", "run {r} int adc 보여줘",
-        # all-tower phrasing
+        # all-tower intADC explicit
         "run {r} 모든 타워 intADC 그려줘", "{r}번 전체 타워 intADC 보여줘",
+        "run {r} 모든 채널 intADC", "run {r} all tower intADC 그려",
+        "{r}번 런 intADC DQM", "run {r} DQM intADC 그려줘",
+        "{r} intADC DQM 보여줘", "run {r} 전체 intADC",
+    ]
+    # Templates with NO method keyword — model should ask IntADC/PeakADC
+    full_nomethod_tmpl = [
+        "run {r} 그려줘", "run {r} 플랏 보여줘", "run {r} 전부 그려줘",
+        "run {r} 그래프 다 그려줘", "{r}번 런 플랏", "{r} 플랏 보여줘",
+        "run {r} 그래프 보여줘", "{r}번 그려줘", "run {r} 플랏 그려",
+        "{r} 데이터 그려줘", "run {r} 전체 플랏", "{r}번 런 전부 그려",
+        "run {r} plot", "{r} 그래프 전부", "run {r} 다 그려",
+        "run {r} DQM 그려줘", "{r}번 DQM 보여줘", "run {r} DQM plot",
         "run {r} 타워 전체 그려줘", "{r} 모든 타워 그래프",
-        "run {r} 모든 채널 intADC", "{r}번 전타워 플랏",
-        "run {r} all tower intADC 그려", "{r} 전체 타워 그려줘",
+        "{r}번 전타워 플랏", "{r} 전체 타워 그려줘",
         "run {r} 타워 다 그려", "{r}번 런 모든 타워 플랏",
     ]
     full_peakadc_tmpl = [
@@ -337,8 +343,29 @@ def gen_dqm_plot() -> List[dict]:
              "reason": f"Run {run} full PeakADC DQM 플랏 생성"},
         ))
 
-    # ── B. full type — relative reference (150) ───────────────────────────────
+    # nomethod explicit-run: 100 samples → tool:none asking method
+    for _ in range(100):
+        run = _random_run()
+        tmpl = random.choice(full_nomethod_tmpl)
+        examples.append(make_example(
+            _make_state(random.random() > 0.3),
+            tmpl.format(r=run),
+            {"tool": "none", "message": "IntADC로 그릴까요, PeakADC로 그릴까요?"},
+        ))
+
+    # ── B. full type — relative reference ────────────────────────────────────
+    # Explicit-method relative templates only
     relative_intadc = [
+        "현재 런 intADC 그려줘", "이번 거 intADC 보여줘",
+        "방금 런 적분 그려줘", "이번 데이터 적분 ADC",
+        "방금 거 integral 그려줘", "이번 런 intADC 그래프",
+        "이번 런 전체 타워 intADC", "방금 거 intADC DQM",
+        "이번 결과 intADC 그려줘", "방금 런 intADC 보여줘",
+        "지금 런 intADC 그려", "현재 데이터 적분 ADC 그려줘",
+        "방금 거 적분 그려줘", "이번 런 적분ADC 보여줘",
+    ]
+    # No method in relative reference → ask method
+    relative_nomethod = [
         "방금 데이터 플랏 그려줘", "이번 런 그려줘", "마지막 런 플랏 보여줘",
         "방금 받은 거 그래프", "이번 거 전부 그려줘", "지금 런 플랏 그려줘",
         "방금 거 그려줘", "이번 데이터 플랏", "마지막 데이터 그려",
@@ -350,12 +377,8 @@ def gen_dqm_plot() -> List[dict]:
         "방금 거 전부 그려", "이번 런 다 그려줘", "방금 돌린 데이터 그래프",
         "현재 런 플랏 그려", "지금 런 데이터 그려줘",
         "방금 거 DQM 그려줘", "이번 런 DQM 보여줘", "방금 결과 DQM",
-        "현재 런 intADC 그려줘", "이번 거 intADC 보여줘",
-        "방금 런 적분 그려줘", "이번 데이터 적분 ADC",
-        "방금 거 integral 그려줘", "이번 런 intADC 그래프",
-        "방금 거 모든 타워 그려줘", "이번 런 전체 타워 intADC",
-        "방금 런 모든 채널 그려", "이번 결과 전 타워 보여줘",
-        "방금 거 타워 다 그려", "현재 런 모든 타워 플랏",
+        "방금 거 모든 타워 그려줘", "방금 런 모든 채널 그려",
+        "이번 결과 전 타워 보여줘", "방금 거 타워 다 그려", "현재 런 모든 타워 플랏",
     ]
     relative_peakadc = [
         "방금 거 peakADC 그려", "이번 런 peak 그려줘", "방금 데이터 피크 보여줘",
@@ -369,7 +392,7 @@ def gen_dqm_plot() -> List[dict]:
         "방금 거 모든 타워 peakADC", "이번 런 전체 타워 peak",
     ]
 
-    for _ in range(110):
+    for _ in range(70):
         tmpl = random.choice(relative_intadc)
         state = _make_state(with_agent=True)
         run = state["current_run"]
@@ -377,6 +400,14 @@ def gen_dqm_plot() -> List[dict]:
             "tool": "dqm_plot",
             "params": {"run_number": run, "method": "IntADC", "type": "full"},
             "reason": f"현재 run {run} full IntADC DQM 플랏 생성",
+        }))
+
+    for _ in range(80):
+        tmpl = random.choice(relative_nomethod)
+        state = _make_state(with_agent=True)
+        examples.append(make_example(state, tmpl, {
+            "tool": "none",
+            "message": "IntADC로 그릴까요, PeakADC로 그릴까요?",
         }))
 
     for _ in range(40):
