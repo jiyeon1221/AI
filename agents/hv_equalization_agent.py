@@ -160,6 +160,7 @@ After user says "완료":
 4. NEVER include a done channel in channel_values.
 5. ALWAYS use EXACT numbers from state — never invent values.
 6. When CONVERGED (state C=True, S=True), call hv_equalization_done_channel IMMEDIATELY.
+7. All "message" field values MUST be written in Korean (한국어) only. Never use Chinese characters (한자).
 """
 
     def _get_step_hint(self) -> str:
@@ -561,6 +562,6 @@ After user says "완료":
         return None
 
     def _guard_ai_message(self, message: str) -> Optional[str]:
-        # plot confirm 메시지가 아닌 상황에서 suggest 전에 plot confirm 없이 넘어가는 것 방지
-        # (역방향: needs_plot_confirm=True인데 plot confirm 외 메시지 보내는 경우는 _guard_tool이 처리)
+        if MSG_PLOT_CONFIRM in message and not self.state.get("needs_plot_confirm"):
+            return f"needs_plot_confirm=False — DO NOT send plot confirmation before DAQ runs. {self._get_step_hint()}"
         return None

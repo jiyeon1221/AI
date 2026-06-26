@@ -148,6 +148,7 @@ When ALL towers are completed, the SYSTEM sends the completion message and ends 
    - {"message": "..."}                        (user message)
    - {"tool": "none", "update_state": {...}}   (ONLY for STEP 0 config: beam_energy / target_events / phase)
 5. When the step hint says a user already answered during config, parse it immediately — do NOT re-ask.
+6. All "message" field values MUST be written in Korean (한국어) only. Never use Chinese characters (한자).
 """
 
     def _get_step_hint(self) -> str:

@@ -80,6 +80,7 @@ If the request is unclear or you cannot determine a tool, respond:
 {"tool": "none", "message": "<ask the user for clarification>"}
 
 RULES:
+0. All "message" and "reason" field values MUST be written in Korean (한국어) only. Never use Chinese characters (한자).
 1. Output ONLY valid JSON. No markdown, no explanation outside JSON.
 2. Always resolve relative references using the provided state.
 3. For run_log updates, extract column and value from the user's message.
@@ -302,6 +303,8 @@ class BrainAgent(BaseAgent):
         if tool_name == "dqm_plot":
             if not params.get("run_number"):
                 return ("run_number", "어떤 런 번호의 DQM 플롯을 그릴까요?")
+            if not params.get("method"):
+                return ("method", "IntADC로 그릴까요, PeakADC로 그릴까요?")
             if params.get("type") == "single" and not params.get("modules"):
                 return ("modules", "어떤 채널을 그릴까요? (예: T1, T1-C, T1-S)")
         if tool_name == "run_log":
