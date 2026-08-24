@@ -40,13 +40,13 @@ class BrainAgentSim(BrainAgent):
                 io.send_tool_output(result)
 
             elif tool_name in ("hv_read", "hv_status"):
-                params.setdefault("command", "status")
+                params["command"] = "status"
                 result = sim.hv_status(params.get("channels"))
                 io.send_tool_output(result)
 
             elif tool_name == "hv_write":
                 io.send_status("HV 변경 중... [SIM]")
-                cmd = params.get("command", "status")
+                cmd = params.get("command", "voltage")
                 if cmd == "voltage":
                     ch = params.get("channels")
                     voltage = float(params.get("voltage", 0))

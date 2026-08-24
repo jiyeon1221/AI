@@ -645,8 +645,26 @@ class HVControlTool(BaseTool):
                 f"'slot:{slot_list.split(',')[0].strip()}:{ch}' 형식으로 지정해주세요."
             )
 
-        # Name lookup
         name_key = identifier.upper()
+
+        # C / S side 선택: 타워 채널 이름 "T1C..T9C"/"T1S..T9S" (모듈 접두 형식도 허용).
+        # (TRIG1/TRIG2, MCP-C/MCP-S 같은 특수 채널은 제외 — 순수 타워 채널만)
+        if name_key in ("C", "S"):
+            return sorted(
+                pair for name, pair in name_map.items()
+                if re.match(rf'^(?:M\d+[-_ ]?)?T\d+[-_ ]?{name_key}$', name)
+            )
+
+        # Tower 선택: "T1"~"T9" → 해당 타워의 C/S 채널
+        tower_m = re.match(r'^T(\d+)$', name_key)
+        if tower_m:
+            tn = tower_m.group(1)
+            return sorted(
+                pair for name, pair in name_map.items()
+                if re.match(rf'^(?:M\d+[-_ ]?)?T{tn}[-_ ]?[CS]$', name)
+            )
+
+        # Name lookup
         if name_key in name_map:
             return [name_map[name_key]]
 

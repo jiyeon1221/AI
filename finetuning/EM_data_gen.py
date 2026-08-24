@@ -37,6 +37,10 @@ After user responds, parse their input:
   CRITICAL: energy keys must be INTEGERS (e.g., 1, 2, 3). scan_order must be sorted ascending.
   CRITICAL: beam_energy in GeV → store as number (integer if whole: "2GeV" → 2; float if decimal: "2.5GeV" → 2.5). NEVER convert to MeV.
   CRITICAL: If user says "모두", "각각", or "씩" with one number (e.g., "모두 500개"), apply that number to ALL energies.
+  CRITICAL: If the user names a DAQ config for an energy (e.g. "3GeV setup1로 200000"),
+  add "config": "<name>" to THAT energy's entry ONLY (copy the name EXACTLY as written).
+  If a config name appears before ALL energies, apply it to every energy.
+  OMIT "config" when the user does not name one — the default ("setup") applies.
 
 === STEP 1: Move to T5 ===
 CRITICAL RULE: After STEP 0, when phase is "idle" and energy_config is NOT empty, start STEP 1.
@@ -70,6 +74,7 @@ Params: {
     "pos_tilt": 1.0,
     "beam_energy": <energy>
 }
+(If energy_config[energy] has "config", also include "config": <that name> in Params. Omit otherwise.)
 (Plot is auto-rendered by DQM live during DAQ — never call any plot tool.)
 
 2c. Request Plot Confirmation (only AFTER the DAQ tool has run):
@@ -128,9 +133,10 @@ def _build_state_context(state):
         for e in so:
             cfg = ec.get(e, {})
             status = "✅" if cfg.get("completed") else "➡️" if e == state.get("current_energy") else "  "
+            cfg_suffix = f" config={cfg['config']}" if cfg.get("config") else ""
             lines.append(f"  {status} {e} GeV: target={cfg.get('target_events','?')} "
                          f"collected={cfg.get('collected_events',0)} "
-                         f"runs={cfg.get('runs',[])} completed={cfg.get('completed',False)}")
+                         f"runs={cfg.get('runs',[])} completed={cfg.get('completed',False)}{cfg_suffix}")
     return "\n".join(lines)
 
 
@@ -215,7 +221,7 @@ def make_example(state, history, decision, current_input=None):
     }
 
 
-def _emit_energy(examples, state, history, energy, events, t5_x, t5_y, run_number):
+def _emit_energy(examples, state, history, energy, events, t5_x, t5_y, run_number, daq_config=None):
     """한 에너지의 모델 결정 턴(set-beam → DAQ → plot msg)을 생성.
     완료(completed) 표시는 코드(시스템)가 소유하므로 모델 턴으로 만들지 않는다."""
     # 2a: set-beam message
@@ -224,12 +230,15 @@ def _emit_energy(examples, state, history, energy, events, t5_x, t5_y, run_numbe
     history.append({"role": "assistant", "content": json.dumps(dec, ensure_ascii=False)})
     history.append({"role": "user", "content": "완료"})
 
-    # 2b: DAQ
-    dec = {"tool": "daq_run_tool", "params": {
+    # 2b: DAQ (에너지별 DAQ config이 지정된 경우에만 "config" 포함 — 기본 setup은 생략)
+    params = {
         "events": events,
         "pos_h": t5_x, "pos_v": t5_y,
         "pos_rot": 1.5, "pos_tilt": 1.0, "beam_energy": energy,
-    }}
+    }
+    if daq_config:
+        params["config"] = daq_config
+    dec = {"tool": "daq_run_tool", "params": params}
     examples.append(make_example(state, history, dec))
     history.append({"role": "assistant", "content": json.dumps(dec, ensure_ascii=False)})
     state["energy_config"][energy]["collected_events"] = events
@@ -246,7 +255,10 @@ def _emit_energy(examples, state, history, energy, events, t5_x, t5_y, run_numbe
     state["energy_config"][energy]["completed"] = True
 
 
-def generate_workflow_normal(energy_list, events_list, user_input):
+def generate_workflow_normal(energy_list, events_list, user_input, config_list=None):
+    """config_list: 에너지별 DAQ config 이름 리스트 (None 또는 에너지별 None/이름)."""
+    if config_list is None:
+        config_list = [None] * len(energy_list)
     examples = []
     history = []
     t5_x = round(random.uniform(70.0, 130.0), 3)
@@ -269,10 +281,12 @@ def generate_workflow_normal(energy_list, events_list, user_input):
     history.append({"role": "user",      "content": user_input})
 
     # STEP 0b (config parse — model-owned; state still phase=config at decision time)
-    energy_config_dict = {
-        e: {"target_events": ev, "collected_events": 0, "runs": [], "completed": False, "completed_at": None}
-        for e, ev in zip(energy_list, events_list)
-    }
+    energy_config_dict = {}
+    for e, ev, cfg in zip(energy_list, events_list, config_list):
+        entry = {"target_events": ev, "collected_events": 0, "runs": [], "completed": False, "completed_at": None}
+        if cfg:
+            entry["config"] = cfg
+        energy_config_dict[e] = entry
     dec = {"tool": "none", "update_state": {"energy_config": energy_config_dict, "scan_order": energy_list, "phase": "idle"}}
     examples.append(make_example(state, history, dec))
     history.append({"role": "assistant", "content": json.dumps(dec, ensure_ascii=False)})
@@ -297,7 +311,8 @@ def generate_workflow_normal(energy_list, events_list, user_input):
     for i, energy in enumerate(energy_list):
         state["current_energy"] = energy
         state["current_energy_idx"] = i
-        _emit_energy(examples, state, history, energy, events_list[i], t5_x, t5_y, run_number)
+        _emit_energy(examples, state, history, energy, events_list[i], t5_x, t5_y, run_number,
+                     daq_config=config_list[i])
         run_number += 1
 
     # STEP 3 완료 메시지는 시스템이 보낸다 — 모델 턴으로 만들지 않는다.
@@ -548,6 +563,39 @@ def main():
         ([2, 4, 6],               [100000, 200000, 300000],                  "2gev 100000 4gev 200000 6gev 300000"),
         ([1, 3, 5, 7, 10],        [100000, 100000, 200000, 200000, 300000],  "1,3GeV 100000 5,7GeV 200000 10GeV 300000"),
 
+        # ── 5-6자리 경계 변별 — 같은 config에 5자리·6자리 혼재 (20개) ────
+        # 모델이 0의 개수를 정확히 세어 옮기도록 강제하는 핵심 케이스
+        ([1, 2],                  [80000, 800000],                            "1GeV 80000개 2GeV 800000개"),
+        ([1, 2, 3],               [50000, 500000, 100000],                    "1GeV 50000개 2GeV 500000개 3GeV 100000개"),
+        ([2, 4, 6],               [90000, 900000, 99000],                     "2GeV 90000 4GeV 900000 6GeV 99000"),
+        ([1, 5],                  [10000, 100000],                            "1GeV 10000개 5GeV 100000개"),
+        ([1, 2, 3, 4],            [20000, 200000, 30000, 300000],             "1GeV 20000 2GeV 200000 3GeV 30000 4GeV 300000"),
+        ([5, 10],                 [850000, 85000],                            "5GeV 850000개 10GeV 85000개"),
+        ([1, 3, 5],               [40000, 400000, 44000],                     "1gev 40000 3gev 400000 5gev 44000"),
+        ([2, 4],                  [60000, 600000],                            "2GeV 60000개, 4GeV 600000개"),
+        ([1, 2, 5, 10],           [95000, 950000, 105000, 15000],             "1GeV 95000개 2GeV 950000개 5GeV 105000개 10GeV 15000개"),
+        ([1, 2],                  [110000, 11000],                            "1GeV 110000개 2GeV 11000개"),
+        ([3, 6, 9],               [70000, 700000, 77000],                     "3GeV 70000개 6GeV 700000개 9GeV 77000개"),
+        ([1, 2, 3],               [125000, 12500, 250000],                    "1GeV 125000개 2GeV 12500개 3GeV 250000개"),
+        ([1, 2, 4],               [55000, 550000, 65000],                     "1GeV 55000개 2GeV 550000개 4GeV 65000개"),
+        ([1, 2, 3, 4, 5],         [10000, 100000, 20000, 200000, 500000],     "1GeV 10000 2GeV 100000 3GeV 20000 4GeV 200000 5GeV 500000"),
+        ([10, 20],                [130000, 13000],                            "10GeV 130000 20GeV 13000"),
+        ([1, 5, 10],              [480000, 48000, 840000],                    "1GeV 480000개, 5GeV 48000개, 10GeV 840000개"),
+        ([2, 4, 6, 8],            [15000, 150000, 25000, 250000],             "2gev 15000 4gev 150000개 6gev 25000 8gev 250000개"),
+        ([1, 2],                  [999000, 99900],                            "1GeV 999000개 2GeV 99900개"),
+        ([1, 2, 3],               [80000, 80000, 800000],                     "1,2GeV 80000개, 3GeV 800000개"),
+        ([1, 2, 3, 4],            [500000, 500000, 50000, 50000],             "1,2GeV 500000개 3,4GeV 50000개"),
+
+        # ── 비-라운드 5-6자리 (8개) ──────────────────────────────────────
+        ([1, 2, 3],               [123000, 234000, 345000],                   "1GeV 123000개 2GeV 234000개 3GeV 345000개"),
+        ([2, 4, 6],               [85000, 175000, 465000],                    "2GeV 85000개 4GeV 175000개 6GeV 465000개"),
+        ([1, 5, 9],               [120000, 240000, 360000],                   "1gev 120000 5gev 240000 9gev 360000"),
+        ([1, 2, 3, 4],            [110000, 220000, 330000, 440000],           "1GeV 110000 2GeV 220000 3GeV 330000 4GeV 440000"),
+        ([3, 6, 12],              [75000, 150000, 675000],                    "3GeV 75000개, 6GeV 150000개, 12GeV 675000개"),
+        ([1, 4, 8],               [98000, 198000, 298000],                    "1GeV 98000개 4GeV 198000개 8GeV 298000개"),
+        ([2, 5, 8, 11],           [135000, 245000, 355000, 465000],           "2GeV 135000개 5GeV 245000개 8GeV 355000개 11GeV 465000개"),
+        ([1, 2],                  [625000, 62500],                            "1GeV 625000개 2GeV 62500개"),
+
         # ── 넓은 에너지 범위 + 소형 이벤트 (8개) ────────────────────────
         ([1, 10, 50, 100],        [500, 1000, 5000, 10000],                  "1GeV 500개 10GeV 1000개 50GeV 5000개 100GeV 10000개"),
         ([1, 2, 5, 10, 20, 50],   [200, 500, 1000, 3000, 8000, 20000],       "1GeV 200개 2GeV 500개 5GeV 1000개 10GeV 3000개 20GeV 8000개 50GeV 20000개"),
@@ -560,6 +608,29 @@ def main():
     ]
     for energy_list, events_list, user_input in test_cases:
         all_ex.extend(generate_workflow_normal(energy_list, events_list, user_input))
+
+    # ── 에너지별 DAQ config 지정 케이스 (기본은 setup, 지정 시 그 이름 사용) ──
+    # 각 항목: (energy_list, events_list, config_list, user_input)
+    config_cases = [
+        ([1, 2, 3],        [10000, 20000, 200000],  [None, None, "setup1"],
+         "1GeV 10000 2GeV 20000 3GeV setup1로 200000"),
+        ([1, 2, 5],        [100000, 200000, 300000], [None, None, "setup1"],
+         "1GeV 100000 2GeV 200000 5GeV setup1로 300000"),
+        ([2, 4],           [100000, 200000],         [None, "config1"],
+         "2GeV 100000개 4GeV config1로 200000개"),
+        ([1, 5, 10],       [80000, 80000, 80000],    ["test", "test", "test"],
+         "test로 1,5,10GeV 모두 80000개"),
+        ([1, 2],           [50000, 100000],          ["setup1", "setup2"],
+         "1GeV setup1로 50000개 2GeV setup2로 100000개"),
+        ([3, 6],           [150000, 300000],         ["test", None],
+         "3GeV는 test 설정으로 150000개, 6GeV는 300000개"),
+        ([1, 2, 3, 4],     [100000, 100000, 100000, 500000], [None, None, None, "setup2"],
+         "1,2,3GeV 100000개 4GeV setup2로 500000개"),
+        ([5, 10],          [200000, 400000],         ["physics", "physics"],
+         "physics 설정으로 5GeV 200000개 10GeV 400000개"),
+    ]
+    for energy_list, events_list, config_list, user_input in config_cases:
+        all_ex.extend(generate_workflow_normal(energy_list, events_list, user_input, config_list=config_list))
 
     mid_cases = [
         # 정수만 각각

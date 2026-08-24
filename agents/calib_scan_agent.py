@@ -10,7 +10,7 @@ from datetime import datetime
 from tools.daq_tool import DAQRunTool
 import tools.motor_control_tool as motor
 
-from .base_agent import BaseAgent
+from .base_agent import BaseAgent, format_event_count, extract_number_tokens
 sys.path.append(str(Path(__file__).parent.parent))
 from config import AGENT_MODELS, MSG_PLOT_CONFIRM
 
@@ -222,8 +222,47 @@ When ALL towers are completed, the SYSTEM sends the completion message and ends 
         )
         self.state["current_tower_idx"] = completed_count
 
+    def _guard_update_state(self, updates: Dict[str, Any]) -> Optional[str]:
+        """STEP 0 config 파싱 방어 (2단계):
+        1) 입력에서 값을 하나로 확정할 수 있으면 → LLM 파싱을 코드 값으로 자동 교정
+           - beam_energy: GeV 앵커 숫자 (없으면 입력의 유일한 숫자)
+           - target_events: GeV 앵커가 아닌 유일한 숫자
+           '3GeV 10000개'를 한 턴에 답해 beam_energy=10000으로 뒤바뀌는 것도 여기서 교정.
+        2) 확정 불가(후보 여러 개)면 → 출처 검증(입력에 없는 숫자 거부)으로 폴백"""
+        tokens = extract_number_tokens(self._last_user_input)
+        if not tokens:
+            return None  # 대조할 입력이 없으면 통과 (기존 동작 유지)
+        energies = [v for v, _, _, is_e in tokens if is_e]
+        plains = [v for v, _, _, is_e in tokens if not is_e]
+
+        for key, candidates, cast in (
+            ("beam_energy", energies if energies else plains, lambda x: int(x) if x == int(x) else x),
+            ("target_events", plains, int),
+        ):
+            # 최초 설정(config 단계)만 방어 — 이후엔 _ONCE_SET_PROTECTED가 변경 자체를 막는다
+            if key not in updates or updates[key] is None or self.state.get(key) is not None:
+                continue
+            # ── 1) 자동 교정: 후보가 정확히 1개면 코드 값으로 확정 ──
+            if len(candidates) == 1:
+                true_val = cast(candidates[0])
+                if updates[key] != true_val:
+                    self.log(f"{key} 자동 교정(입력 기준): LLM {updates[key]!r} → {true_val!r}")
+                    updates[key] = true_val
+                continue
+            # ── 2) 폴백: 출처 검증 ──
+            try:
+                v = float(updates[key])
+            except (TypeError, ValueError):
+                return f"REJECTED: {key} {updates[key]!r} is not a number. Re-parse the user input."
+            allowed = {t for t, _, _, _ in tokens}
+            if v not in allowed:
+                return (f"REJECTED: {key} {updates[key]} does not appear in the user's input. "
+                        f"Numbers in input: {sorted(allowed)}. Re-parse exactly — do not invent or drop digits.")
+        return None
+
     def _update_state(self, updates: Dict[str, Any]):
         """State 업데이트"""
+        _events_before = self.state.get("target_events")
         for key, value in updates.items():
             if key == "tower_status" and isinstance(value, dict):
                 for t, v in value.items():
@@ -251,6 +290,14 @@ When ALL towers are completed, the SYSTEM sends the completion message and ends 
             else:
                 self.state[key] = value
                 self.log(f"State updated: {key} = {value}")
+
+        # config 완료(target_events 최초 설정) 시 설정 내용을 코드가 echo (사용자 이중 확인용)
+        if _events_before is None and self.state.get("target_events") is not None:
+            self.io.send_ai_message(
+                f"설정을 다음과 같이 확인했습니다:\n"
+                f"  • Beam Energy: {self.state.get('beam_energy')} GeV\n"
+                f"  • Target Events: {format_event_count(self.state['target_events'])} / tower"
+            )
 
     def _position_for_current_step(self) -> Optional[Dict[str, float]]:
         """current_tower_idx 기준 — 타워마다 x/y가 다름."""
@@ -332,6 +379,18 @@ When ALL towers are completed, the SYSTEM sends the completion message and ends 
     def _guard_ai_message(self, message: str) -> Optional[str]:
         if MSG_PLOT_CONFIRM in message and not self.state.get("needs_plot_confirm"):
             return f"needs_plot_confirm=False — DO NOT send plot confirmation. {self._get_step_hint()}"
+        # 위치 확인이 끝났고 아직 DAQ 전이면 유일한 유효 동작은 daq_run_tool 호출이다.
+        # base 모델이 위치 이동 메시지를 한 번 더 내보내는 것(중복 질문)을 차단한다.
+        idx = self.state.get("current_tower_idx", 0)
+        if idx < len(self.tower_order):
+            tower = self.tower_order[idx]
+            st = self.state["tower_status"].get(tower, {})
+            if (self.state.get("beam_energy") is not None
+                    and self.state.get("target_events") is not None
+                    and st.get("y_confirmed") and not st.get("runs")
+                    and not self.state.get("needs_plot_confirm")):
+                return (f"{tower} 위치 확인 완료 — 메시지를 보내지 말고 daq_run_tool을 호출하세요. "
+                        f"{self._get_step_hint()}")
         return None
 
     def _format_progress(self) -> str:
@@ -361,7 +420,7 @@ When ALL towers are completed, the SYSTEM sends the completion message and ends 
         """현재 진행 상황 요약 출력 (CLI용)"""
         print(f"\n📊 Calibration Progress Summary:")
         print("-" * 70)
-        print(f"Energy: {self.state['beam_energy']} GeV | Target: {self.state['target_events']} events/tower")
+        print(f"Energy: {self.state['beam_energy']} GeV | Target: {format_event_count(self.state['target_events'])} events/tower")
         print("-" * 70)
         for i, tower in enumerate(self.tower_order):
             status = self.state['tower_status'][tower]
@@ -390,6 +449,11 @@ When ALL towers are completed, the SYSTEM sends the completion message and ends 
         return self._format_progress()
 
     def _on_user_input(self, user_input: str):
+        # STEP 0 config 중에는 코드가 소유한 부킹(x_moved/y_confirmed/plot)이 없다.
+        # 이 가드가 없으면 에너지·이벤트 응답("3","1000")이 첫 타워의
+        # y_confirmed=True로 잘못 소비되어 첫 타워 위치 이동을 건너뛴다.
+        if self.state.get("beam_energy") is None or self.state.get("target_events") is None:
+            return
         idx = self.state.get("current_tower_idx", 0)
         if idx >= len(self.tower_order):
             return

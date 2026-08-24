@@ -28,8 +28,8 @@ MESSAGE_PLOT_CONFIRM = MSG_PLOT_CONFIRM
 MESSAGE_HV_CONFIRM   = MSG_HV_CONFIRM
 # {c}/{s}: 타워별 채널명 (예: T5C/T5S). 호출부에서 c=f"{tower}C", s=f"{tower}S" 전달.
 MESSAGE_APPROVE_BOTH = "분석 결과, 현재 ADC: {c}={adc_c:.1f}, {s}={adc_s:.1f} (목표: {target}). HV 변경 제안: {c} {hv_c_old}V→{hv_c_new}V, {s} {hv_s_old}V→{hv_s_new}V. 적용하시겠습니까?"
-MESSAGE_APPROVE_C    = "분석 결과, 현재 ADC: {c}={adc_c:.1f} (목표: {target}). HV 변경 제안: {c} {hv_c_old}V→{hv_c_new}V. ({s} 완료) 적용하시겠습니까?"
-MESSAGE_APPROVE_S    = "분석 결과, 현재 ADC: {s}={adc_s:.1f} (목표: {target}). HV 변경 제안: {s} {hv_s_old}V→{hv_s_new}V. ({c} 완료) 적용하시겠습니까?"
+MESSAGE_APPROVE_C    = "분석 결과, 현재 ADC: {c}={adc_c:.1f} (목표: {target}). HV 변경 제안: {c} {hv_c_old}V→{hv_c_new}V, {s} 완료(변경 없음). 적용하시겠습니까?"
+MESSAGE_APPROVE_S    = "분석 결과, 현재 ADC: {s}={adc_s:.1f} (목표: {target}). HV 변경 제안: {c} 완료(변경 없음), {s} {hv_s_old}V→{hv_s_new}V. 적용하시겠습니까?"
 
 
 def random_events() -> int:
@@ -69,9 +69,9 @@ The SYSTEM marks Y-axis confirmed automatically — do NOT output any state upda
 
 1e. Ask approval (only NOT-done channels):
   Both not done: {{"message": "분석 결과, 현재 ADC: {t}C=<adc_c>, {t}S=<adc_s> (목표: <target>). HV 변경 제안: {t}C <old_c>V→<new_c>V, {t}S <old_s>V→<new_s>V. 적용하시겠습니까?", "update_state": {{"phase": "approving"}}}}
-  Only C not done: {{"message": "분석 결과, 현재 ADC: {t}C=<adc_c> (목표: <target>). HV 변경 제안: {t}C <old_c>V→<new_c>V. ({t}S 완료) 적용하시겠습니까?", "update_state": {{"phase": "approving"}}}}
-  Only S not done: {{"message": "분석 결과, 현재 ADC: {t}S=<adc_s> (목표: <target>). HV 변경 제안: {t}S <old_s>V→<new_s>V. ({t}C 완료) 적용하시겠습니까?", "update_state": {{"phase": "approving"}}}}
-  CRITICAL: Use EXACT values from state (last_suggested_hv_c/s, last_adc_c/s) — NEVER fabricate numbers.
+  Only C not done: {{"message": "분석 결과, 현재 ADC: {t}C=<adc_c> (목표: <target>). HV 변경 제안: {t}C <old_c>V→<new_c>V, {t}S 완료(변경 없음). 적용하시겠습니까?", "update_state": {{"phase": "approving"}}}}
+  Only S not done: {{"message": "분석 결과, 현재 ADC: {t}S=<adc_s> (목표: <target>). HV 변경 제안: {t}C 완료(변경 없음), {t}S <old_s>V→<new_s>V. 적용하시겠습니까?", "update_state": {{"phase": "approving"}}}}
+  CRITICAL: Copy the state's "HV 변경 제안" line EXACTLY, always in C-then-S order. Keep each arrow's old→new order (do NOT swap the two numbers). A done channel appears as "완료(변경 없음)" in its own C/S slot — NEVER relabel which channel is done. Use EXACT ADC values (last_adc_c/s). NEVER fabricate numbers.
   If user requests manual HV adjustment (e.g. "C를 800으로", "S 10 올려줘"):
     Update suggested values via update_state and re-send approval message:
     {{"message": "...(updated approval)...", "update_state": {{"last_suggested_hv_c": <new_c>, "last_suggested_hv_s": <new_s>}}}}
@@ -137,12 +137,12 @@ def _build_state_context(state: Dict) -> str:
         target = state.get("target_adc_c")
         if done_c and done_s:
             lines.append(f"*** CONVERGENCE: C=True, S=True — CALL hv_equalization_done_channel NOW ***")
-        elif suggest_pending and phase == "approving":
+        elif suggest_pending and state.get("approval_confirmed"):
             lines.append(f"*** CONVERGENCE: C={done_c}, S={done_s} | ADC: C={adc_c:.1f}, S={adc_s:.1f} | Target: {target} ***")
-            lines.append(f"*** REQUIRED NEXT: hv_execute_tool voltage (step 1f) ***")
+            lines.append(f"*** REQUIRED NEXT: hv_execute_tool voltage (step 1f) — user confirmed ***")
         elif suggest_pending:
             lines.append(f"*** CONVERGENCE: C={done_c}, S={done_s} | ADC: C={adc_c:.1f}, S={adc_s:.1f} | Target: {target} ***")
-            lines.append(f"*** REQUIRED NEXT: approval message (step 1e) ***")
+            lines.append(f"*** REQUIRED NEXT: approval message (step 1e) — if user gave manual HV values, update last_suggested_hv_c/s and re-send approval ***")
         else:
             lines.append(f"*** CONVERGENCE: C={done_c}, S={done_s} | ADC: C={adc_c:.1f}, S={adc_s:.1f} | Target: {target} ***")
             lines.append(f"*** REQUIRED NEXT: daq_run_tool (step 1c) ***")
@@ -158,9 +158,11 @@ def _build_state_context(state: Dict) -> str:
     if state.get("last_suggested_hv_c") is not None:
         dc = state.get("channel_done_c", False)
         ds = state.get("channel_done_s", False)
-        c_str = f"C={state['last_suggested_hv_c']}V" + (" [DONE-skip]" if dc else "")
-        s_str = f"S={state['last_suggested_hv_s']}V" + (" [DONE-skip]" if ds else "")
-        lines.append(f"Suggested HV: {c_str}, {s_str}  <- use EXACT values in approval message")
+        oc, nc = state.get("last_hv_c"), state["last_suggested_hv_c"]
+        os_, ns = state.get("last_hv_s"), state["last_suggested_hv_s"]
+        c_str = "C 완료(변경 없음)" if dc else f"C {oc:.0f}V→{nc}V"
+        s_str = "S 완료(변경 없음)" if ds else f"S {os_:.0f}V→{ns}V"
+        lines.append(f"HV 변경 제안 (현재→제안, 이 화살표를 그대로 승인 메시지에 복사): {c_str}, {s_str}")
     if state.get("last_run_number"):
         lines.append(f"Last Run Number: {state['last_run_number']}")
     lines.append(f"Iterations: {state.get('iterations', 0)}")
@@ -195,7 +197,7 @@ def _get_step_hint(state: Dict) -> str:
             return f"{base} | REQUIRED NEXT: hv_execute_tool status (step 1b — Y-axis confirmed)"
     elif adc_known and done_c and done_s:
         return f"{base} | CONVERGED → call hv_equalization_done_channel (step 1h)"
-    elif adc_known and suggest_pending and phase == "approving":
+    elif adc_known and suggest_pending and state.get("approval_confirmed"):
         return f"{base} | REQUIRED NEXT: hv_execute_tool voltage (step 1f — user already confirmed)"
     elif adc_known and suggest_pending:
         return f"{base} | REQUIRED NEXT: approval message (step 1e)"
@@ -372,6 +374,7 @@ def generate_workflow(tower: str, x: float, y: float,
         "y_confirmed": False,
         "needs_suggest": False,
         "needs_plot_confirm": False,
+        "approval_confirmed": False,
     }
 
     # start_iter > 0: 이미 완료된 반복을 히스토리에 압축
@@ -512,6 +515,7 @@ def generate_workflow(tower: str, x: float, y: float,
 
         history.append({"role": "user", "content": "완료"})
         state["phase"] = "approving"
+        state["approval_confirmed"] = True  # 사용자가 '완료'로 승인 → voltage 적용
 
         # 1f: Apply voltage
         cv = {}
@@ -533,6 +537,7 @@ def generate_workflow(tower: str, x: float, y: float,
         state["channel_done_c"] = done_c
         state["channel_done_s"] = done_s
         state["phase"] = "equalizing"
+        state["approval_confirmed"] = False  # 다음 승인 라운드용 리셋
 
         # 1g: Confirmation
         dec = {"message": MESSAGE_HV_CONFIRM}
@@ -596,6 +601,7 @@ def generate_manual_adjust_workflow(tower: str, x: float, y: float,
         "done": False,
         "needs_suggest": False,
         "needs_plot_confirm": False,
+        "approval_confirmed": False,
     }
 
     # Build partial history: motor, Y-move, status, DAQ, suggest already done
@@ -668,6 +674,7 @@ def generate_manual_adjust_workflow(tower: str, x: float, y: float,
 
     # User says 완료
     history.append({"role": "user", "content": "완료"})
+    state["approval_confirmed"] = True  # 조정값 확인 → voltage 적용
 
     # Training example: LLM applies voltage (step 1f)
     cv = {}

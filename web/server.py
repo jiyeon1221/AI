@@ -17,9 +17,9 @@ from pathlib import Path
 
 from typing import Optional, List
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from agents.agent_runner import AgentRunner
@@ -565,9 +565,13 @@ def _read_live_stdout(proc: "_subprocess.Popen") -> None:
 
 
 @app.post("/api/dqm/run-monit")
-async def api_run_monit(req: MonitRequest):
+async def api_run_monit(req: MonitRequest, request: Request):
     """Execute monit with custom parameters and return generated canvases."""
     global _freeform_live_proc, _freeform_live_run, _freeform_live_log_seq
+
+    deny = _check_action_password(request)
+    if deny:
+        return deny
 
     monit_bin = str(DQM_DIR / "monit")
     config_path = str(PROJECT_ROOT / "config_general.yml")
@@ -801,7 +805,12 @@ async def api_run_monit(req: MonitRequest):
 
 @app.post("/api/dqm/kill-live")
 async def api_kill_live():
-    """Stop the freeform LIVE monit process by touching the sentinel file."""
+    """Force-stop the freeform LIVE monit process, same as Kill-All.
+
+    Sends SIGTERM to the process group (spawned with setpgrp), waits a short
+    grace period, then escalates to SIGKILL. No sentinel-file graceful
+    shutdown — this terminates immediately like the Kill-All button.
+    """
     global _freeform_live_proc, _freeform_live_run
 
     with _freeform_live_lock:
@@ -814,27 +823,27 @@ async def api_kill_live():
             return {"ok": True, "msg": "no live process running"}
 
         sentinel = DQM_OUTPUT_DIR / f"Run{run_number}_END"
-        try:
-            sentinel.touch()
-        except OSError:
-            pass
 
-        def _wait_and_cleanup():
+        def _kill_now():
             try:
-                proc.wait(timeout=15)
-            except _subprocess.TimeoutExpired:
+                pgid = os.getpgid(proc.pid)
+                os.killpg(pgid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
                 proc.terminate()
+            try:
+                proc.wait(timeout=2)
+            except _subprocess.TimeoutExpired:
                 try:
-                    proc.wait(timeout=5)
-                except _subprocess.TimeoutExpired:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
                     proc.kill()
-                    proc.wait()
+                proc.wait()
             try:
                 sentinel.unlink(missing_ok=True)
             except OSError:
                 pass
 
-        await asyncio.get_event_loop().run_in_executor(None, _wait_and_cleanup)
+        await asyncio.get_event_loop().run_in_executor(None, _kill_now)
 
         _freeform_live_proc = None
         _freeform_live_run = None
@@ -844,11 +853,12 @@ async def api_kill_live():
 
 @app.post("/api/dqm/kill-blocking")
 async def api_kill_blocking():
-    """Abort the in-flight non-LIVE monit run with SIGINT (Ctrl+C equivalent).
+    """Force-abort the in-flight non-LIVE monit run, same as Kill-All.
 
-    Sends SIGINT to the whole process group (the child was spawned with
-    setpgrp so it has its own group). If the process doesn't die within
-    a few seconds, escalate to SIGTERM and finally SIGKILL.
+    Sends SIGTERM to the whole process group (the child was spawned with
+    setpgrp so it has its own group), waits a short grace period, then
+    escalates to SIGKILL. No SIGINT graceful step — this terminates
+    immediately like the Kill-All button.
 
     The /api/dqm/run-monit handler is still awaiting proc.wait() in an
     executor thread; killing the process unblocks that wait, the handler
@@ -865,19 +875,13 @@ async def api_kill_blocking():
     def _signal_chain():
         try:
             pgid = os.getpgid(proc.pid)
-            os.killpg(pgid, signal.SIGINT)
+            os.killpg(pgid, signal.SIGTERM)
         except (ProcessLookupError, PermissionError):
             return
         try:
-            proc.wait(timeout=5)
+            proc.wait(timeout=2)
             return
         except _subprocess.TimeoutExpired:
-            pass
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-            proc.wait(timeout=5)
-            return
-        except (ProcessLookupError, _subprocess.TimeoutExpired):
             pass
         try:
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
@@ -948,8 +952,49 @@ async def api_find_monit_processes():
     return {"ok": True, "count": len(procs), "processes": procs}
 
 
+def _get_action_password() -> str:
+    """Read the password gating the EXECUTE / Kill-All ./monit buttons.
+
+    Read fresh from config_general.yml on each call so the operator can
+    change it without restarting the server. Missing/blank key -> "".
+    """
+    import yaml
+    try:
+        with open(PROJECT_ROOT / "config_general.yml") as f:
+            cfg = yaml.safe_load(f) or {}
+        return str(cfg.get("dqm_action_password") or "")
+    except Exception:
+        return ""
+
+
+def _check_action_password(request: Request) -> Optional[JSONResponse]:
+    """Return a 403 JSONResponse if the X-DQM-Password header is wrong.
+
+    Returns None when the password matches, so callers do:
+        deny = _check_action_password(request)
+        if deny: return deny
+    """
+    expected = _get_action_password()
+    supplied = request.headers.get("X-DQM-Password", "")
+    if not expected or supplied != expected:
+        return JSONResponse({"error": "비밀번호가 올바르지 않습니다."}, status_code=403)
+    return None
+
+
+@app.post("/api/dqm/verify-password")
+async def api_verify_password(request: Request):
+    """Verify the ./monit action password for the UI's one-time gate."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    expected = _get_action_password()
+    supplied = str((body or {}).get("password", ""))
+    return {"ok": bool(expected) and supplied == expected}
+
+
 @app.post("/api/dqm/kill-all-monit")
-async def api_kill_all_monit():
+async def api_kill_all_monit(request: Request):
     """SIGTERM (then SIGKILL after a short grace period) every ./monit.
 
     Re-enumerates inside this handler so the modal preview and the actual
@@ -958,6 +1003,10 @@ async def api_kill_all_monit():
     own pid, never touches non-./monit processes, and reports a per-PID
     success/failure result for the UI.
     """
+    deny = _check_action_password(request)
+    if deny:
+        return deny
+
     try:
         import psutil
         import signal as _signal_mod
@@ -1050,6 +1099,68 @@ async def api_live_log(since: int = 0):
     return {"lines": new_lines, "total": total}
 
 
+@app.get("/api/dqm/live-log/stream")
+async def api_live_log_stream(request: Request, since: int = 0):
+    """Server-Sent Events stream of monit stdout, pushed as lines arrive.
+
+    Same deque/sequence-number contract as the polling `/api/dqm/live-log`
+    endpoint (see its docstring), but instead of one HTTP request per poll
+    the browser opens a single long-lived EventSource. The generator watches
+    the in-memory deque on a short internal tick and emits an SSE `data:`
+    frame the instant new lines appear — so the browser log tracks monit in
+    real time (~0.1 s) without any per-line request overhead.
+
+    Each frame's payload is `{"lines": [...], "total": <seq>}`, identical in
+    shape to the polling endpoint, so the client reuses `_appendLog()` and its
+    `_logOffset` bookkeeping unchanged. The stream never returns on its own
+    (it heartbeats when idle); the browser closes the EventSource explicitly
+    in stopLogPoll(), which avoids EventSource's automatic reconnect firing
+    after a run ends.
+    """
+    # On an automatic EventSource reconnect the browser re-requests the same
+    # URL (with its original `since=0`) but also sends the Last-Event-ID
+    # header carrying the last `id:` we emitted — resume from there so the
+    # replay doesn't duplicate lines the client already has.
+    last_id = request.headers.get("last-event-id")
+    if last_id is not None:
+        try:
+            since = int(last_id)
+        except ValueError:
+            pass
+
+    async def _events():
+        sent = since
+        # Heartbeat every ~15 s of silence keeps the connection (and any
+        # intermediate proxy) alive and lets Starlette notice a disconnect.
+        idle_ticks = 0
+        while True:
+            with _freeform_live_log_lock:
+                lines = list(_freeform_live_log)
+                total = _freeform_live_log_seq
+            first_seq = total - len(lines)
+            if sent < total:
+                if sent <= first_seq:
+                    new_lines = lines
+                else:
+                    new_lines = lines[sent - first_seq:]
+                sent = total
+                payload = json.dumps({"lines": new_lines, "total": total})
+                yield f"id: {total}\ndata: {payload}\n\n"
+                idle_ticks = 0
+            else:
+                idle_ticks += 1
+                if idle_ticks >= 150:  # ~15 s at 0.1 s/tick
+                    idle_ticks = 0
+                    yield ": keep-alive\n\n"
+            await asyncio.sleep(0.1)
+
+    return StreamingResponse(
+        _events(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 @app.get("/api/motor/position")
 async def api_motor_position():
     """현재 모터 X축 위치를 반환 (azd_kren --pos). DQM 패널 하단 실시간 표시용."""
@@ -1087,11 +1198,17 @@ async def websocket_endpoint(ws: WebSocket):
         from starlette.websockets import WebSocketState
 
         tool_buf = []
+        tool_flush_interval = 0.5
+        last_tool_flush = asyncio.get_running_loop().time()
 
-        async def flush_tool():
-            nonlocal tool_buf
+        async def flush_tool(force: bool = False):
+            nonlocal tool_buf, last_tool_flush
             if tool_buf:
                 combined = "\n".join(tool_buf)
+                now = asyncio.get_running_loop().time()
+                is_termination = "received termination" in combined.lower()
+                if not force and not is_termination and now - last_tool_flush < tool_flush_interval:
+                    return
                 try:
                     await ws.send_json({"type": "tool_output", "content": combined})
                 except Exception:
@@ -1099,12 +1216,13 @@ async def websocket_endpoint(ws: WebSocket):
                 # "Received termination" is printed by the DAQ executable when
                 # a run finishes successfully.  Emit daq_complete so the browser
                 # can play a notification sound for the remote operator.
-                if "received termination" in combined.lower():
+                if is_termination:
                     try:
                         await ws.send_json({"type": "daq_complete"})
                     except Exception:
                         pass
                 tool_buf = []
+                last_tool_flush = now
 
         while True:
             if ws.client_state != WebSocketState.CONNECTED:
@@ -1131,10 +1249,11 @@ async def websocket_endpoint(ws: WebSocket):
                     if msg.get("type") == "tool_output" and not is_brain:
                         # Batch scenario tool_output (DAQ stdout etc.)
                         tool_buf.append(msg["content"])
+                        await flush_tool()
                     elif is_brain:
                         # Brain messages: flush scenario buffer first,
                         # then send immediately WITH source tag preserved
-                        await flush_tool()
+                        await flush_tool(force=True)
 
                         out_msg = msg
                         mtype = msg.get("type")
@@ -1155,6 +1274,16 @@ async def websocket_endpoint(ws: WebSocket):
                             await ws.send_json(out_msg)
                         except Exception:
                             pass
+                        # Brain (background) DAQ output bypasses flush_tool(),
+                        # so replicate its "Received termination" detection here
+                        # — otherwise a DAQ run started via ad-hoc/brain never
+                        # triggers the completion sound.
+                        if (mtype == "tool_output"
+                                and "received termination" in str(msg.get("content", "")).lower()):
+                            try:
+                                await ws.send_json({"type": "daq_complete"})
+                            except Exception:
+                                pass
                         # After the brain's final ai_message, if the scenario
                         # agent is still waiting for confirmation, re-show
                         # the appropriate button(s).
@@ -1168,7 +1297,7 @@ async def websocket_endpoint(ws: WebSocket):
                                 pass
                     else:
                         # Non-tool messages: flush buffer first, then send immediately
-                        await flush_tool()
+                        await flush_tool(force=True)
                         try:
                             await ws.send_json(msg)
                         except Exception:
