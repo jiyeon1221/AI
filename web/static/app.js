@@ -173,7 +173,7 @@ function addCompleteButton() {
   const row = document.createElement('div');
   row.className = 'complete-row';
 
-  if (_awaitingInterrupted && _lastAgentMsg) {
+  if (_awaitingInterrupted && _lastAgentMsg && !_lastAgentMsg.isBrain) {
     _awaitingInterrupted = false;
     appendAI(_lastAgentMsg.text, _lastAgentMsg.isBrain);
   } else {
@@ -198,7 +198,7 @@ function addHvConfirmButtons() {
   const row = document.createElement('div');
   row.className = 'complete-row hv-confirm-row';
 
-  if (_awaitingInterrupted && _lastAgentMsg) {
+  if (_awaitingInterrupted && _lastAgentMsg && !_lastAgentMsg.isBrain) {
     _awaitingInterrupted = false;
     appendAI(_lastAgentMsg.text, _lastAgentMsg.isBrain);
   } else {
@@ -283,11 +283,20 @@ function startAgent(agentName) {
     alert('에이전트가 이미 실행 중입니다. 먼저 Stop을 클릭하세요.');
     return;
   }
+  const needsTowerPick = ['em_scan', 'calib_scan', 'hv_equalization', 'hv_equalization_sim', 'position_scan', 'position_scan_sim'];
+  if (needsTowerPick.includes(agentName)) {
+    openTowerPicker(agentName);
+    return;
+  }
+  _launchAgent(agentName, {});
+}
+
+function _launchAgent(agentName, params) {
   clearPanels();
   activeAgent = agentName;
   setAgentButtons(true);
   setStatus(`${agentName} 에이전트 실행 중`, 'running');
-  send({ type: 'start_agent', agent: agentName, params: {} });
+  send({ type: 'start_agent', agent: agentName, params });
 }
 
 function stopAgent() {
@@ -506,7 +515,7 @@ function setStatus(text, cls) {
 }
 
 function setAgentButtons(running) {
-  ['btn-em', 'btn-calib', 'btn-hv', 'btn-hv-sim'].forEach(id => {
+  ['btn-em', 'btn-calib', 'btn-hv', 'btn-hv-sim', 'btn-pos', 'btn-pos-sim'].forEach(id => {
     const btn = document.getElementById(id);
     btn.disabled = running;
     btn.classList.toggle('active', running && id === 'btn-' + agentIdOf(activeAgent));
@@ -515,7 +524,7 @@ function setAgentButtons(running) {
 }
 
 function agentIdOf(name) {
-  return { em_scan: 'em', calib_scan: 'calib', hv_equalization: 'hv', hv_equalization_sim: 'hv-sim' }[name] || '';
+  return { em_scan: 'em', calib_scan: 'calib', hv_equalization: 'hv', hv_equalization_sim: 'hv-sim', position_scan: 'pos', position_scan_sim: 'pos-sim' }[name] || '';
 }
 
 function chatScroll()  { return document.getElementById('chat-scroll'); }
@@ -916,7 +925,12 @@ function toggleSound() {
 
 function playDaqCompleteSound() {
   if (!_soundEnabled) return;
-  new Audio(_DAQ_SOUND_SOURCES[0]).play()
+  // Reuse the single preloaded element instead of `new Audio()` each call.
+  // Firefox (esp. on Linux) caps the number of concurrent media elements,
+  // so repeatedly creating new ones makes play() start failing after a few
+  // plays until they are garbage-collected.
+  _daqAudio.currentTime = 0;
+  _daqAudio.play()
     .then(() => console.log('[autoTB] DAQ sound (mp3) played'))
     .catch(err => {
       console.warn('[autoTB] MP3 play failed, falling back to chime:', err.message);
@@ -1214,6 +1228,159 @@ setInterval(_pollMotorPosition, 10000);
     }
   });
 })();
+
+/* ── Tower Picker ──────────────────────────────────────────── */
+// 3×3 grid layout (row-major)
+const TOWER_GRID = [
+  ['T1','T2','T3'],  // row 0
+  ['T4','T5','T6'],  // row 1
+  ['T7','T8','T9'],  // row 2
+];
+
+// Full serpentine order (for sorting selected subset) — agents.agent_runner.TOWER_ORDER와 동일
+const SERPENTINE_ORDER = [
+  ...TOWER_GRID[0],
+  ...[...TOWER_GRID[1]].reverse(),
+  ...TOWER_GRID[2],
+];
+
+let _towerPickerAgent = null;
+let _towerPickerMulti = false;
+let _towerSelected = new Set();
+let _towerDragging = false;
+let _towerDragMode = null; // 'select' | 'deselect'
+
+const POSITION_AGENTS = ['position_scan', 'position_scan_sim'];
+let _posDirection = null;   // 'horizontal' | 'vertical' | 'both'
+let _posChannel = null;     // 'C' | 'S'
+
+function openTowerPicker(agentName) {
+  _towerPickerAgent = agentName;
+  _towerPickerMulti = !['em_scan', 'position_scan', 'position_scan_sim'].includes(agentName);
+  _towerSelected.clear();
+
+  const isPos = POSITION_AGENTS.includes(agentName);
+  _posDirection = null;
+  _posChannel = null;
+  const posOpts = document.getElementById('pos-options');
+  if (posOpts) posOpts.style.display = isPos ? 'block' : 'none';
+  document.querySelectorAll('.pos-opt-btn').forEach(b => b.classList.remove('selected'));
+
+  const hint = document.getElementById('tower-picker-hint');
+  hint.textContent = _towerPickerMulti
+    ? '클릭 또는 드래그로 여러 타워 선택'
+    : (isPos ? '타워·방향·채널을 선택하세요' : '타워 하나를 선택하세요');
+
+  _buildTowerGrid();
+  _updateTowerPickerFooter();
+  document.getElementById('tower-picker-overlay').classList.add('open');
+}
+
+function selectPosOption(kind, value) {
+  if (kind === 'direction') _posDirection = value;
+  else if (kind === 'channel') _posChannel = value;
+  document.querySelectorAll(`.pos-opt-btn[data-kind="${kind}"]`).forEach(b => {
+    b.classList.toggle('selected', b.dataset.value === value);
+  });
+  _updateTowerPickerFooter();
+}
+
+function closeTowerPicker() {
+  document.getElementById('tower-picker-overlay').classList.remove('open');
+  _towerPickerAgent = null;
+}
+
+function clearTowerSelection() {
+  _towerSelected.clear();
+  document.querySelectorAll('.tower-cell').forEach(c => c.classList.remove('selected'));
+  _updateTowerPickerFooter();
+}
+
+function _buildTowerGrid() {
+  const grid = document.getElementById('tower-grid');
+  grid.innerHTML = '';
+
+  TOWER_GRID.forEach(row => {
+    row.forEach(tower => {
+      const cell = document.createElement('div');
+      cell.className = 'tower-cell';
+      cell.textContent = tower;
+      cell.dataset.tower = tower;
+
+      cell.addEventListener('mousedown', e => {
+        e.preventDefault();
+        _towerDragging = true;
+        const isSelected = _towerSelected.has(tower);
+        if (!_towerPickerMulti) {
+          // single-select: just toggle to this one
+          _towerSelected.clear();
+          document.querySelectorAll('.tower-cell').forEach(c => c.classList.remove('selected'));
+          _towerSelected.add(tower);
+          cell.classList.add('selected');
+        } else {
+          _towerDragMode = isSelected ? 'deselect' : 'select';
+          _toggleTowerCell(cell, tower);
+        }
+        _updateTowerPickerFooter();
+      });
+
+      cell.addEventListener('mouseenter', () => {
+        if (!_towerDragging || !_towerPickerMulti) return;
+        _toggleTowerCell(cell, tower, _towerDragMode);
+        _updateTowerPickerFooter();
+      });
+
+      grid.appendChild(cell);
+    });
+  });
+
+  document.addEventListener('mouseup', () => { _towerDragging = false; }, { once: false });
+}
+
+function _toggleTowerCell(cell, tower, forcedMode) {
+  const mode = forcedMode || (_towerSelected.has(tower) ? 'deselect' : 'select');
+  if (mode === 'select') {
+    _towerSelected.add(tower);
+    cell.classList.add('selected');
+  } else {
+    _towerSelected.delete(tower);
+    cell.classList.remove('selected');
+  }
+}
+
+function _updateTowerPickerFooter() {
+  const n = _towerSelected.size;
+  document.getElementById('tower-picker-count').textContent = `${n}개 선택됨`;
+  const confirmBtn = document.getElementById('tower-picker-confirm');
+  if (POSITION_AGENTS.includes(_towerPickerAgent)) {
+    confirmBtn.disabled = !(n === 1 && _posDirection && _posChannel);
+  } else if (_towerPickerMulti) {
+    confirmBtn.disabled = (n === 0);
+  } else {
+    confirmBtn.disabled = (n !== 1);
+  }
+}
+
+function confirmTowerPicker() {
+  if (!_towerPickerAgent) return;
+  const agentName = _towerPickerAgent;
+  closeTowerPicker();
+
+  // Sort selected towers into serpentine order
+  const selected = Array.from(_towerSelected);
+  const ordered = SERPENTINE_ORDER.filter(t => selected.includes(t));
+
+  let params = {};
+  if (POSITION_AGENTS.includes(agentName)) {
+    params = { tower: ordered[0], direction: _posDirection, channel: _posChannel };
+  } else if (agentName === 'em_scan') {
+    params = { tower: ordered[0] };
+  } else {
+    params = { tower_order: ordered };
+  }
+
+  _launchAgent(agentName, params);
+}
 
 /* ── Init ──────────────────────────────────────────────────── */
 _updateSoundBtn();

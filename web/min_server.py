@@ -9,6 +9,7 @@ So it can be used in environments where AI can't run.
 """
 
 import asyncio
+import json
 import os
 import re
 import signal
@@ -16,9 +17,9 @@ import threading
 from pathlib import Path
 from typing import Optional, List
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from tools.hv_control_tool import HVControlTool
@@ -282,9 +283,13 @@ def _read_live_stdout(proc: "_subprocess.Popen") -> None:
 
 
 @app.post("/api/dqm/run-monit")
-async def api_run_monit(req: MonitRequest):
+async def api_run_monit(req: MonitRequest, request: Request):
     """Execute DQM monit with custom parameters and return generated canvases."""
     global _freeform_live_proc, _freeform_live_run, _freeform_live_log_seq
+
+    deny = _check_action_password(request)
+    if deny:
+        return deny
 
     monit_bin = str(DQM_DIR / "monit")
     config_path = str(PROJECT_ROOT / "config_general.yml")
@@ -492,27 +497,27 @@ async def api_kill_live():
             return {"ok": True, "msg": "no live process running"}
 
         sentinel = DQM_OUTPUT_DIR / f"Run{run_number}_END"
-        try:
-            sentinel.touch()
-        except OSError:
-            pass
 
-        def _wait_and_cleanup():
+        def _kill_now():
             try:
-                proc.wait(timeout=15)
-            except _subprocess.TimeoutExpired:
+                pgid = os.getpgid(proc.pid)
+                os.killpg(pgid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
                 proc.terminate()
+            try:
+                proc.wait(timeout=2)
+            except _subprocess.TimeoutExpired:
                 try:
-                    proc.wait(timeout=5)
-                except _subprocess.TimeoutExpired:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
                     proc.kill()
-                    proc.wait()
+                proc.wait()
             try:
                 sentinel.unlink(missing_ok=True)
             except OSError:
                 pass
 
-        await asyncio.get_event_loop().run_in_executor(None, _wait_and_cleanup)
+        await asyncio.get_event_loop().run_in_executor(None, _kill_now)
 
         _freeform_live_proc = None
         _freeform_live_run = None
@@ -532,19 +537,13 @@ async def api_kill_blocking():
     def _signal_chain():
         try:
             pgid = os.getpgid(proc.pid)
-            os.killpg(pgid, signal.SIGINT)
+            os.killpg(pgid, signal.SIGTERM)
         except (ProcessLookupError, PermissionError):
             return
         try:
-            proc.wait(timeout=5)
+            proc.wait(timeout=2)
             return
         except _subprocess.TimeoutExpired:
-            pass
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-            proc.wait(timeout=5)
-            return
-        except (ProcessLookupError, _subprocess.TimeoutExpired):
             pass
         try:
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
@@ -598,8 +597,53 @@ async def api_find_monit_processes():
     return {"ok": True, "count": len(procs), "processes": procs}
 
 
+def _get_action_password() -> str:
+    """Read the password gating the EXECUTE / Kill-All ./monit buttons.
+
+    Read fresh from config_general.yml on each call so the operator can
+    change it without restarting the server. Missing/blank key -> "".
+    """
+    import yaml
+    try:
+        with open(PROJECT_ROOT / "config_general.yml") as f:
+            cfg = yaml.safe_load(f) or {}
+        return str(cfg.get("dqm_action_password") or "")
+    except Exception:
+        return ""
+
+
+def _check_action_password(request: Request) -> Optional[JSONResponse]:
+    """Return a 403 JSONResponse if the X-DQM-Password header is wrong.
+
+    Returns None when the password matches, so callers do:
+        deny = _check_action_password(request)
+        if deny: return deny
+    """
+    expected = _get_action_password()
+    supplied = request.headers.get("X-DQM-Password", "")
+    if not expected or supplied != expected:
+        return JSONResponse({"error": "비밀번호가 올바르지 않습니다."}, status_code=403)
+    return None
+
+
+@app.post("/api/dqm/verify-password")
+async def api_verify_password(request: Request):
+    """Verify the ./monit action password for the UI's one-time gate."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    expected = _get_action_password()
+    supplied = str((body or {}).get("password", ""))
+    return {"ok": bool(expected) and supplied == expected}
+
+
 @app.post("/api/dqm/kill-all-monit")
-async def api_kill_all_monit():
+async def api_kill_all_monit(request: Request):
+    deny = _check_action_password(request)
+    if deny:
+        return deny
+
     try:
         import psutil
         import signal as _signal_mod
@@ -684,4 +728,57 @@ async def api_live_log(since: int = 0):
     else:
         new_lines = lines[since - first_seq:]
     return {"lines": new_lines, "total": total}
+
+
+@app.get("/api/dqm/live-log/stream")
+async def api_live_log_stream(request: Request, since: int = 0):
+    """Server-Sent Events stream of monit stdout, pushed as lines arrive.
+
+    Same deque/sequence-number contract as the polling `/api/dqm/live-log`
+    endpoint (see its docstring), but instead of one HTTP request per poll
+    the browser opens a single long-lived EventSource. The generator watches
+    the in-memory deque on a short internal tick and emits an SSE `data:`
+    frame the instant new lines appear — so the browser log tracks monit in
+    real time (~0.1 s) without any per-line request overhead.
+    """
+    # On an automatic EventSource reconnect the browser re-requests the same
+    # URL (with its original `since=0`) but also sends the Last-Event-ID
+    # header carrying the last `id:` we emitted — resume from there so the
+    # replay doesn't duplicate lines the client already has.
+    last_id = request.headers.get("last-event-id")
+    if last_id is not None:
+        try:
+            since = int(last_id)
+        except ValueError:
+            pass
+
+    async def _events():
+        sent = since
+        idle_ticks = 0
+        while True:
+            with _freeform_live_log_lock:
+                lines = list(_freeform_live_log)
+                total = _freeform_live_log_seq
+            first_seq = total - len(lines)
+            if sent < total:
+                if sent <= first_seq:
+                    new_lines = lines
+                else:
+                    new_lines = lines[sent - first_seq:]
+                sent = total
+                payload = json.dumps({"lines": new_lines, "total": total})
+                yield f"id: {total}\ndata: {payload}\n\n"
+                idle_ticks = 0
+            else:
+                idle_ticks += 1
+                if idle_ticks >= 150:  # ~15 s at 0.1 s/tick
+                    idle_ticks = 0
+                    yield ": keep-alive\n\n"
+            await asyncio.sleep(0.1)
+
+    return StreamingResponse(
+        _events(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 

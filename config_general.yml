@@ -5,16 +5,20 @@ Motor:
   Speed: 10.0
   Acc: 100000
   Dec: 100000
-  EZSBinary: /Users/yhep/AI/CERN2026/EZSmotor/azd_kren
+  EZSBinary: /Users/yhep/AI/base/EZSmotor/azd_kren
   UnitScale: 1.0
 
+# DQM freeform "EXECUTE ./monit" / "Kill All ./monit" 버튼 비밀번호 게이트.
+# 웹 UI가 브라우저 탭 세션당 한 번 물어보고 서버가 이 문자열과 대조한다.
+dqm_action_password: "rhk315"
+
 BaseDirectory: "/Volumes/yhep/scratch/YUdaq"
-Mapping: "/Users/yhep/AI/CERN2026/DQM/mapping/toymapping.root"
+Mapping: "/Users/yhep/AI/base/DQM/mapping/toymapping.root"
 
 # ===== 경로 설정  =====
 Paths:
   RunNumberFile: "/Volumes/yhep/scratch/notice/test/TB_daq/runnum.txt"
-  JsonKeyFile: "/Users/yhep/AI/CERN2026/logging/auto-logging-486908-9688f3064ef9.json"
+  JsonKeyFile: "/Users/yhep/AI/base/logging/auto-logging-486908-9688f3064ef9.json"
   SpreadsheetId: "1ExfjnGbRvupQD0ZbTTl6NOWP7drRhgioPmzxUoFwuA8"
 
   DaqWorkDir: "/Users/yhep/scratch/notice/test/TB_daq"
@@ -22,10 +26,14 @@ Paths:
   NoticeBase: "/Users/yhep/scratch/notice"
   KillMeFile: "/Users/yhep/scratch/notice/test/TB_daq/KILLME"
 
-  DqmDir: "/Users/yhep/AI/CERN2026/DQM"
+  DqmDir: "/Users/yhep/AI/base/DQM"
 
   HodoscopeSetFile: "/Volumes/yhep/scratch/notice/test/TB_daq/config/setup/set_JBNU_DAQ_21.txt"
   DaqLogDir: "/Volumes/yhep/scratch/notice/test/TB_daq/log"
+
+# ===== Run Log 기본값 =====
+RunLog:
+  BeamType: "e-"
 
 # ===== Mac Studio SSH (LAN connection) =====
 StudioSSH:

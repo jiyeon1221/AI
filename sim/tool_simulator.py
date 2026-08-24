@@ -79,11 +79,12 @@ class ToolSimulator:
     ) -> str:
         run_number = self._next_run_number()
         events = params.get("events", "?")
+        config = params.get("config", "setup")
         program = params.get("program", "?")
         beam = params.get("beam_energy", "?")
         lines = [
             "🔧 [SIM] DAQ Run (no hardware)",
-            f"   Program: {program} | Beam: {beam} GeV | Events: {events}",
+            f"   Program: {program} | Config: {config} | Beam: {beam} GeV | Events: {events}",
             f"   pos_h={params.get('pos_h')} pos_v={params.get('pos_v')}",
             f"Run: {run_number}",
             "Received termination",
@@ -99,11 +100,15 @@ class ToolSimulator:
         )
 
     def hv_status(self, channels=None) -> str:
-        ch_list = channels if isinstance(channels, list) and channels else []
         lines = ["📊 [SIM] HV Status Query"]
-        for ch in ch_list:
-            v = self._hv.get(ch, 775.0)
-            lines.append(f"({ch})  V0Set = {v:.1f} V  [SIM]")
+        if isinstance(channels, list) and channels:
+            for ch in channels:
+                v = self._hv.get(ch, 775.0)
+                lines.append(f"({ch})  V0Set = {v:.1f} V  [SIM]")
+        elif isinstance(channels, str) and channels and channels.lower() not in ("all", "전체"):
+            lines.append(f"  channels = {channels}  [SIM]")
+        else:
+            lines.append("  channels = all  [SIM]")
         return "\n".join(lines)
 
     def hv_voltage(self, channel_values: Dict[str, float]) -> str:

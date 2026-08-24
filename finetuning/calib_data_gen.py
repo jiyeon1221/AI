@@ -267,6 +267,59 @@ def _emit_tower(examples, state, history, tower_positions, tower, events, run_nu
     state["current_tower_idx"] = sum(1 for s in state["tower_status"].values() if s["completed"])
 
 
+# 사용자가 에너지/이벤트를 입력하는 다양한 표현 — 모델이 숫자를 뽑아내도록 일반화.
+# assistant 출력(파싱 결과)은 표현과 무관하게 항상 동일한 숫자여야 한다.
+ENERGY_INPUT_VARIANTS = [
+    lambda e: f"{int(e)}",
+    lambda e: f"{int(e)} GeV",
+    lambda e: f"{int(e)}gev",
+]
+EVENTS_INPUT_VARIANTS = [
+    lambda n: f"{n}",
+    lambda n: f"{n}개",
+    lambda n: f"{n} events",
+]
+
+
+def generate_config_only(energy: float, events: int,
+                         energy_input: str, events_input: str) -> List[Dict[str, Any]]:
+    """STEP 0(config)만 담은 3턴짜리 짧은 워크플로우.
+
+    타워 스캔은 normal 워크플로우에서 충분히 학습되므로 여기선 생략한다.
+    config만 대량 생성해 숫자 파싱(에너지/이벤트) 학습 비중을 높이되
+    (첫 턴 '에너지를 입력하세요' 포함), 학습 시간은 거의 늘리지 않는다."""
+    examples: List[Dict[str, Any]] = []
+    history: List[Dict[str, Any]] = []
+    tower_positions = _random_tower_positions()
+    state = {
+        "phase": "config",
+        "beam_energy": None,
+        "target_events": None,
+        "current_tower_idx": 0,
+        "tower_status": _init_tower_status(),
+        "needs_plot_confirm": False,
+    }
+
+    # 0a: ask energy (history 비어있음 = 실제로 멈췄던 바로 그 첫 턴)
+    dec = {"message": MESSAGE_ENERGY_REQ}
+    examples.append(make_example(state, history, tower_positions, dec))
+    history.append({"role": "assistant", "content": json.dumps(dec, ensure_ascii=False)})
+    history.append({"role": "user", "content": energy_input})
+
+    # 0b: parse energy → ask events (state.beam_energy still None at decision time)
+    dec = {"message": MESSAGE_EVENTS_REQ, "update_state": {"beam_energy": energy, "phase": "config_events"}}
+    examples.append(make_example(state, history, tower_positions, dec))
+    history.append({"role": "assistant", "content": json.dumps(dec, ensure_ascii=False)})
+    state["beam_energy"] = energy
+    state["phase"] = "config_events"
+    history.append({"role": "user", "content": events_input})
+
+    # 0c: parse events → idle (state.target_events still None at decision time)
+    dec = {"tool": "none", "update_state": {"target_events": events, "phase": "idle"}}
+    examples.append(make_example(state, history, tower_positions, dec))
+    return examples
+
+
 def generate_workflow_normal(energy: float, events: int) -> List[Dict[str, Any]]:
     examples = []
     history = []
@@ -380,6 +433,15 @@ def main():
         energy = random.choice(ENERGIES)
         events = random_events()
         all_ex.extend(generate_workflow_normal(energy, events))
+
+    # config(STEP 0) 집중 학습 — 다양한 입력 표현으로 숫자 파싱을 일반화.
+    # 워크플로우당 3턴뿐이라 학습 시간 부담은 거의 없다.
+    for energy in ENERGIES:
+        for _ in range(15):
+            events = random_events()
+            e_in = random.choice(ENERGY_INPUT_VARIANTS)(energy)
+            ev_in = random.choice(EVENTS_INPUT_VARIANTS)(events)
+            all_ex.extend(generate_config_only(energy, events, e_in, ev_in))
 
     for energy in random.choices(ENERGIES, k=20):
         events = random_events()

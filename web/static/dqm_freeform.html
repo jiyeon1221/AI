@@ -10,8 +10,13 @@
   #wrap { display: flex; height: 100vh; }
 
   /* ── Sidebar ── */
-  #sidebar { width: 340px; min-width: 260px; background: #1a1d27;
+  #sidebar { width: 340px; min-width: 200px; max-width: 70vw; flex-shrink: 0;
+             background: #1a1d27;
              border-right: 1px solid #2c2f3e; display: flex; flex-direction: column; }
+  /* Drag handle between the sidebar and #main to resize the sidebar. */
+  #gutter { width: 6px; flex-shrink: 0; cursor: col-resize; background: #2c2f3e; }
+  #gutter:hover, #gutter.dragging { background: #4f8ef7; }
+  body.col-resizing { cursor: col-resize; user-select: none; }
   #sidebar header { padding: 12px 14px; border-bottom: 1px solid #2c2f3e; }
   #sidebar header h1 { font-size: 14px; color: #4f8ef7; margin-bottom: 0; }
 
@@ -30,6 +35,21 @@
     border: 1px solid #2c2f3e; border-radius: 4px; color: #dde1f0; font-size: 12px;
   }
   .cmd-row select { cursor: pointer; }
+  .run-stepper { flex: 1; display: flex; align-items: stretch; }
+  .run-stepper input { flex: 1; border-top-right-radius: 0; border-bottom-right-radius: 0; }
+  /* Hide the browser's native number spinners; use our own arrows instead. */
+  .run-stepper input::-webkit-outer-spin-button,
+  .run-stepper input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+  .run-stepper input { -moz-appearance: textfield; }
+  .run-stepper-btns { display: flex; flex-direction: column; }
+  .run-step {
+    flex: 1; width: 22px; padding: 0; line-height: 1;
+    background: #1a1d29; color: #9ca0b8; font-size: 8px; cursor: pointer;
+    border: 1px solid #2c2f3e; border-left: none;
+  }
+  .run-step:first-child { border-top-right-radius: 4px; border-bottom: none; }
+  .run-step:last-child { border-bottom-right-radius: 4px; }
+  .run-step:hover { background: #23273a; color: #4f8ef7; }
   .cmd-flags { display: flex; gap: 10px; flex-wrap: wrap; margin: 6px 0; }
   .cmd-flags label { font-size: 11px; color: #9ca0b8; cursor: pointer; display: flex; align-items: center; gap: 3px; width: auto; }
   .cmd-flags input[type="checkbox"] { accent-color: #4f8ef7; }
@@ -76,6 +96,11 @@
     font-size: 10px; color: #c5cae9; line-height: 1.5;
     background: #0a0c14; white-space: pre-wrap; word-break: break-all;
   }
+  /* Progress lines ("N / M events ...") are updated in place; tint yellow. */
+  #live-log div[data-prog="1"] { color: #ffd54a; }
+  /* File-ready status cells on '|' table rows: O = ready (green), X = wait (red). */
+  #live-log .cell-o { color: #4caf50; font-weight: 700; }
+  #live-log .cell-x { color: #f44336; font-weight: 700; }
 
   /* ── Run browser ── */
   #run-browser { flex: 1; overflow-y: auto; display: flex; flex-direction: column; }
@@ -247,7 +272,13 @@
       <div class="cmd-body">
         <div class="cmd-row">
           <label>Run #</label>
-          <input id="inp-run" type="number" placeholder="12345" />
+          <div class="run-stepper">
+            <input id="inp-run" type="number" placeholder="12345" />
+            <div class="run-stepper-btns">
+              <button type="button" class="run-step" onclick="stepRun(1)" title="Run 번호 +1">▲</button>
+              <button type="button" class="run-step" onclick="stepRun(-1)" title="Run 번호 -1">▼</button>
+            </div>
+          </div>
         </div>
         <div class="cmd-row">
           <label>Type</label>
@@ -337,6 +368,8 @@
       </button>
     </div>
   </div>
+
+  <div id="gutter" title="드래그하여 패널 너비 조절"></div>
 
   <div id="main">
     <header>
@@ -450,6 +483,14 @@ function updatePreview() {
   document.getElementById('cmd-text').textContent = cmd;
 }
 
+// Run-number stepper: ▲/▼ nudge the Run # by ±1 (never below 0).
+function stepRun(delta) {
+  const inp = document.getElementById('inp-run');
+  const next = Math.max(0, (parseInt(inp.value) || 0) + delta);
+  inp.value = next;
+  updatePreview();
+}
+
 // Show the AUX-scope dropdown only when --AUX is checked, so the side-
 // bar doesn't get cluttered for runs that don't use AUX at all.
 (function wireAuxModeVisibility() {
@@ -464,11 +505,68 @@ document.querySelectorAll('#sidebar input, #sidebar select').forEach(el => {
   el.addEventListener('input', updatePreview);
   el.addEventListener('change', updatePreview);
 });
+
+// Drag #gutter to set the sidebar width; #main (flex:1) fills the rest.
+// The chosen width is persisted in localStorage so it survives reloads.
+(function wireSidebarResize() {
+  const sidebar = document.getElementById('sidebar');
+  const gutter = document.getElementById('gutter');
+  if (!sidebar || !gutter) return;
+
+  const MIN = 200;                         // matches #sidebar min-width
+  const maxWidth = () => Math.round(window.innerWidth * 0.7);  // ~max-width:70vw
+  const clamp = (w) => Math.max(MIN, Math.min(maxWidth(), w));
+
+  // Restore a previously dragged width.
+  const saved = parseInt(localStorage.getItem('dqm_sidebar_w') || '', 10);
+  if (!Number.isNaN(saved)) sidebar.style.width = clamp(saved) + 'px';
+
+  let dragging = false;
+
+  const onMove = (e) => {
+    if (!dragging) return;
+    // clientX is measured from the viewport's left edge, which is also the
+    // sidebar's left edge, so it equals the desired sidebar width.
+    sidebar.style.width = clamp(e.clientX) + 'px';
+    e.preventDefault();
+  };
+  const onUp = () => {
+    if (!dragging) return;
+    dragging = false;
+    gutter.classList.remove('dragging');
+    document.body.classList.remove('col-resizing');
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+    localStorage.setItem('dqm_sidebar_w', parseInt(sidebar.style.width, 10));
+  };
+
+  gutter.addEventListener('mousedown', (e) => {
+    dragging = true;
+    gutter.classList.add('dragging');
+    document.body.classList.add('col-resizing');
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+    e.preventDefault();
+  });
+
+  // Double-click the handle to reset to the default width.
+  gutter.addEventListener('dblclick', () => {
+    sidebar.style.width = '340px';
+    localStorage.setItem('dqm_sidebar_w', '340');
+  });
+
+  // Keep the width within bounds if the window is resized smaller.
+  window.addEventListener('resize', () => {
+    const w = parseInt(sidebar.style.width, 10);
+    if (!Number.isNaN(w)) sidebar.style.width = clamp(w) + 'px';
+  });
+})();
+
 onTypeChange(); // init
 
 let _liveRunNumber = null;
 let _livePollTimer = null;
-let _logPollTimer = null;
+let _logSource = null;   // EventSource for the live-log SSE stream
 let _logOffset = 0;
 // Tracks whether a monit run is currently in flight, and which kind:
 //   null       → idle
@@ -508,6 +606,16 @@ function clearLog() {
 // Progress lines look like "2410 / 3003 events  0:03 left ..."
 const _PROGRESS_RE = /^\s*\d+ \/ \d+ events/;
 
+// Colorize file-ready status cells: O -> green, X -> red. HTML-escapes first
+// so log text can never inject markup.
+function _statusColorize(line) {
+  const esc = line
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return esc
+    .replace(/\bX\b/g, '<span class="cell-x">X</span>')
+    .replace(/\bO\b/g, '<span class="cell-o">O</span>');
+}
+
 function _appendLog(lines) {
   if (!lines.length) return;
   const el = document.getElementById('live-log');
@@ -521,7 +629,13 @@ function _appendLog(lines) {
       last.textContent = line;
     } else {
       const div = document.createElement('div');
-      div.textContent = line;
+      // Colorize O/X status cells on table rows (they contain '|'); progress
+      // lines keep their plain-text (yellow) rendering.
+      if (!isProgress && line.indexOf('|') !== -1) {
+        div.innerHTML = _statusColorize(line);
+      } else {
+        div.textContent = line;
+      }
       if (isProgress) div.dataset.prog = '1';
       el.appendChild(div);
     }
@@ -533,20 +647,29 @@ function _appendLog(lines) {
 function startLogPoll() {
   _logOffset = 0;
   document.getElementById('live-log').textContent = '';
-  _logPollTimer = setInterval(async () => {
+  // Live stdout via Server-Sent Events: the browser opens one long-lived
+  // EventSource instead of polling every 800 ms. The server pushes an SSE
+  // frame the instant new lines appear, with the same {lines,total} payload
+  // as the old /api/dqm/live-log poll — so _appendLog / _logOffset
+  // bookkeeping is unchanged and the log tracks monit in real time.
+  if (_logSource) { _logSource.close(); _logSource = null; }
+  const src = new EventSource(`/api/dqm/live-log/stream?since=${_logOffset}`);
+  _logSource = src;
+  src.onmessage = (ev) => {
     try {
-      const r = await fetch(`/api/dqm/live-log?since=${_logOffset}`);
-      const d = await r.json();
-      if (d.lines.length) {
+      const d = JSON.parse(ev.data);
+      if (d.lines && d.lines.length) {
         _appendLog(d.lines);
         _logOffset = d.total;
       }
     } catch (_) {}
-  }, 800);
+  };
+  // EventSource auto-reconnects on transient network errors; nothing to do
+  // here. The stream is torn down deliberately in stopLogPoll().
 }
 
 function stopLogPoll() {
-  if (_logPollTimer !== null) { clearInterval(_logPollTimer); _logPollTimer = null; }
+  if (_logSource) { _logSource.close(); _logSource = null; }
   // Flush remaining lines once
   fetch(`/api/dqm/live-log?since=${_logOffset}`).then(r => r.json()).then(d => {
     if (d.lines.length) { _appendLog(d.lines); _logOffset = d.total; }
@@ -630,7 +753,51 @@ function stopMonit() {
   if (_runMode === 'blocking') return killBlocking();
 }
 
+/* ── Password gate for ./monit actions ──────────────────────
+   The EXECUTE and Kill-All buttons require a password (verified
+   server-side against config_general.yml:dqm_action_password).
+   Once verified it's cached in sessionStorage for the tab session,
+   so the operator is only prompted once. The cached value is also
+   sent as the X-DQM-Password header on the actual action calls,
+   which the server re-checks. */
+const _MONIT_PW_KEY = 'dqmMonitPassword';
+
+function getMonitPassword() {
+  return sessionStorage.getItem(_MONIT_PW_KEY) || '';
+}
+
+// Returns the verified password (string) or null if the user cancelled
+// / entered a wrong one. Prompts only when nothing is cached yet.
+async function ensureMonitAuth() {
+  const cached = getMonitPassword();
+  if (cached) return cached;
+
+  const pw = window.prompt(
+    '⚠ 경고 · 인증 필요\n\n' +
+    './monit 실행 및 프로세스 종료는 보호된 작업입니다.\n' +
+    '실행하려면 비밀번호를 입력하세요:'
+  );
+  if (pw === null) return null;          // cancelled
+  try {
+    const r = await fetch('/api/dqm/verify-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: pw }),
+    });
+    const d = await r.json();
+    if (d.ok) {
+      sessionStorage.setItem(_MONIT_PW_KEY, pw);
+      return pw;
+    }
+  } catch (e) { /* fall through to failure */ }
+  alert('비밀번호가 올바르지 않습니다.');
+  return null;
+}
+
 async function executeMonit() {
+  const pw = await ensureMonitAuth();
+  if (pw === null) return;
+
   const p = getParams();
   if (!p.run_number) { alert('Run 번호를 입력하세요.'); return; }
 
@@ -664,7 +831,7 @@ async function executeMonit() {
   try {
     const res = await fetch('/api/dqm/run-monit', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-DQM-Password': pw },
       body: JSON.stringify(p),
     });
     const data = await res.json();
@@ -961,11 +1128,16 @@ function onKillBackdropClick(e) {
 async function confirmKillAllMonit() {
   const confirm = document.getElementById('kill-modal-confirm');
   const err = document.getElementById('kill-modal-error');
+  const pw = await ensureMonitAuth();
+  if (pw === null) return;
   confirm.disabled = true;
   confirm.textContent = 'Killing…';
   err.textContent = '';
   try {
-    const r = await fetch('/api/dqm/kill-all-monit', { method: 'POST' });
+    const r = await fetch('/api/dqm/kill-all-monit', {
+      method: 'POST',
+      headers: { 'X-DQM-Password': pw },
+    });
     const d = await r.json();
     if (!d.ok) throw new Error(d.error || 'kill failed');
     hideKillAllModal();

@@ -26,6 +26,7 @@ logging/*.json
 
 # DAQ 전체 제외
 DAQ/
+DAQ_JBNU/
 
 # DQM 빌드 / 컴파일 아티팩트
 DQM/output/

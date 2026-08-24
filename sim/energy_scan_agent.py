@@ -4,10 +4,11 @@
 from typing import Dict
 
 from agents.energy_scan_agent import EnergyScanAgent
+from sim.sim_base import SimExecMixin
 from sim.tool_simulator import get_simulator
 
 
-class EnergyScanSimAgent(EnergyScanAgent):
+class EnergyScanSimAgent(SimExecMixin, EnergyScanAgent):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -18,10 +19,10 @@ class EnergyScanSimAgent(EnergyScanAgent):
         if tool_name == "none":
             return "no_tool_executed"
 
-        self.io.send_tool_output(self._sim.format_tool_call(tool_name, params))
-
         if tool_name == "motor_x_move_tool":
             x = self._motor_x_for_current_step()
+            # override(state 기준 x) 후 표시 — 표시값과 실제 이동값 일치.
+            self._sim_emit_tool_call(tool_name, {"x": x})
             self.io.send_tool_output(f"[Motor] X축 이동 시작 (T5): {x:.3f} mm")
             result = self._sim.motor_move(x, "T5")
             self.io.send_tool_output(result)
@@ -33,15 +34,14 @@ class EnergyScanSimAgent(EnergyScanAgent):
             events = None
             if energy_key is not None and energy_key in self.state["energy_config"]:
                 events = self.state["energy_config"][energy_key]["target_events"]
-            self._apply_daq_params_from_state(
+            result, run_number = self._sim_run_daq(
                 params,
                 events=events,
                 beam_energy=energy_key,
                 program="EM Scan",
                 pos=self._position_for_current_step(),
+                daq_config=self._daq_config_for(energy_key),
             )
-            result = self._sim.daq_run(params, line_callback=self.io.send_tool_output)
-            run_number = self._extract_run_number(result)
             if run_number:
                 self.state["last_run_number"] = run_number
                 if energy_key is not None and energy_key in self.state["energy_config"]:
@@ -49,8 +49,7 @@ class EnergyScanSimAgent(EnergyScanAgent):
                     self.state["energy_config"][energy_key]["runs"].append(run_number)
                     self.state["energy_config"][energy_key]["collected_events"] = params.get("events", 0)
                     self.log(f"[SIM] DAQ Run {run_number} 완료: {energy_key} GeV, {params.get('events', 0)} events")
-            # 사용자 plot 확인 전까지 completed=True 차단 (실제 agent와 동일 부킹)
-            self.state["needs_plot_confirm"] = True
             return result
 
+        self._sim_emit_tool_call(tool_name, params)
         return f"Error: Unknown tool {tool_name}"

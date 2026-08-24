@@ -9,7 +9,7 @@ import queue
 import traceback
 from typing import Dict, Any, Optional
 
-from agents.base_agent import BaseAgent
+from agents.base_agent import BaseAgent, _normalize_thousands_commas
 from agents.io_handler import WebSocketIO
 
 
@@ -28,25 +28,40 @@ TOOL_LOCK_MAP = {
 
 TOOLS_NEED_CONFIRM = {"daq_run", "hv_write", "hodoscope_hv_write", "motor_move"}
 
+# hv_write가 실제로 지원하는 command (모델이 "write" 등 엉뚱한 값을 내보낼 때 정규화용)
+_HV_WRITE_COMMANDS = {"voltage", "current", "svmax", "rup", "rdown", "name", "on", "off"}
 
 
 SYSTEM_PROMPT = """You are the Brain Agent for a test beam experiment (KEK/CERN).
 Your job is to interpret the operator's ad-hoc request and call the right tool.
 
 Available tools:
-- daq_run: Run DAQ data collection. params: {"events": int}
+- daq_run: Run DAQ data collection. params: {"events": int, "config": str (optional)}
+  - config is the DAQ config name passed to the run script. It can be ANY name the user says
+    (e.g. "test", "setup", "setup1", "config1", "physics", ...). Default is "setup" —
+    OMIT config unless the user explicitly names one
+    (e.g. "setup1으로 10000개", "config1 설정으로", "test로 돌려줘").
+    Copy the name EXACTLY as the user wrote it — never invent or normalize it.
 - dqm_plot: Generate DQM plots for a run and display in the DQM panel.
   params: {"run_number": int, "method": "IntADC"|"PeakADC", "type": "full"|"heatmap"|"single", "modules": [list]}
   - type defaults to "full" (all towers + heatmap). No modules needed for full.
   - "heatmap": modules must be ["MCPPMT"]. method: IntADC or PeakADC.
   - "single": modules is a list of channel names, e.g. ["T1-C"], ["T1-S","T1-C"], or ["T1"] (T1 auto-expands).
-  - method defaults to "IntADC". Use "PeakADC" only when explicitly requested.
+  - method has NO default. If the user does not say IntADC/적분 or PeakADC/피크, you MUST ask (tool:none) — never assume IntADC.
+  - run_number has NO default. Never invent one. If not given and no relative reference, ask (tool:none).
 - run_log: Google Sheets run log.
   Read:   params: {"command": "read", "run_num": int}
   Update: params: {"command": "update", "run_num": int, "<column>": "<value>"}
   Updatable columns: program, notes, config, beam_energy, beam_type, trigger_setup, hv_drc, hv_aux
-- hv_read: Read current HV status (CAEN HV + Hodoscope both). params: {"command": "status"}
+- hv_read: Read current HV status (CAEN HV + Hodoscope both).
+  params: {"command": "status", "channels": <ch_spec>}
   Use for ANY HV status query including hodoscope queries.
+  "channels" is OPTIONAL and accepts the SAME <ch_spec> forms as hv_write (see below).
+  - Omit "channels" (reads ALL channels) ONLY when there is no channel hint or the user says 전체/모든/all.
+  - If the user restricts to a subset (짝수/홀수/C채널/S채널/타워/특정 채널/슬롯 등),
+    put it in "channels" EXACTLY as you would for hv_write
+    (짝수→"even", 홀수→"odd", S채널/S만→"S", C채널/C만→"C", 타워 T1→"T1",
+     특정 채널→["T3C"], 슬롯→"slot:12").
 - hv_write: Change CAEN HV voltage or turn channels on/off. User confirmation required.
   Voltage: {"command": "voltage", "channels": <ch_spec>, "voltage": <V as float>}
   On/off:  {"command": "on"|"off", "channels": <ch_spec>}
@@ -54,6 +69,8 @@ Available tools:
     T6C, T6S, T7C, T7S, T8C, T8S, T9C, T9S, TRIG1, TRIG2, MCP-S, MCP-C
   Channel spec (<ch_spec>) options:
     "all"          — 전체 채널 (ONLY when user says 전체/모든/all)
+    "S" / "C"      — 모든 S(신틸)/C(체렌코프) 채널
+    "T1"~"T9"      — 타워 단위: 해당 타워의 C/S 채널 (예: "T1" → T1C, T1S)
     "even"         — 짝수 번호 채널 전체
     "odd"          — 홀수 번호 채널 전체
     "N-M"          — ch 번호 N~M 범위 (예: "0-8", "2-12")
@@ -88,7 +105,11 @@ RULES:
    - VIEW/CHECK a log (확인, 보여줘, 읽어줘) WITHOUT a value → {"command": "read", "run_num": ...}
    - WRITE with column+value (e.g. "프로그램에 EM 추가") → {"command": "update", "run_num": ..., "<column>": "<value>"}
 5. hv_read for ANY HV status. "HV 확인", "HV 상태", "호도스코프 HV 확인" → all use hv_read.
+   If the request names a channel subset (짝수/홀수/C/S/타워/채널명/슬롯), pass it in "channels" just like hv_write;
+   otherwise omit "channels" to read ALL channels.
 6. DAQ requires an event count. If the user says "DAQ 돌려줘" without a number, ask how many events.
+   If the user names a DAQ config (test, setup1, config1 등 — 어떤 이름이든), put it in "config";
+   otherwise OMIT config (default "setup").
 7. Channel names like T1C, T1S, T2C, ..., T9S are HV channels — NOT log columns.
    A SINGLE channel name + voltage → channels: [that single channel].
    ONLY use channels: "all" when the input explicitly says 전체/모든/전 채널/all channels.
@@ -98,8 +119,10 @@ RULES:
    If method is not mentioned, respond with tool:none asking "IntADC로 그릴까요, PeakADC로 그릴까요?"
 10. Specific tower/channel (T1, T1-C, T1-S, T5 etc.) → type: single, modules: [name].
 11. "heatmap" or "MCPPMT" mentioned → type: heatmap, modules: ["MCPPMT"].
-12. dqm_plot requires run_number. Infer from state (last completed run) if not specified.
-    If truly unknown, ask which run number.
+12. dqm_plot requires run_number. NEVER invent or guess a run number.
+    Only resolve it from state when the user uses a relative reference (방금/이번/지금/현재/마지막/최근/last).
+    If the user gives NO explicit run number AND NO relative reference,
+    respond tool:none asking "어떤 런 번호의 DQM 플롯을 그릴까요?".
 13. motor_move — always absolute. Extract target position in mm.
 14. hodoscope_hv_write: ONLY when user explicitly says "호도스코프"/"호도"/"hodoscope".
     "꺼줘" / "off" → value: 0.0
@@ -129,6 +152,9 @@ class BrainAgent(BaseAgent):
         self.confirm_queue = confirm_queue or queue.Queue()
         self.clarify_queue = clarify_queue or queue.Queue()
         self._last_daq_run: Optional[int] = None  # run number from last brain-initiated DAQ
+        # 누락 파라미터를 물어본 뒤, 사용자의 답변을 "그 필드의 값"으로 채우기 위한 대기 상태.
+        # {"tool": str, "params": dict, "reason": str}
+        self._pending: Optional[Dict[str, Any]] = None
 
     def _get_system_prompt(self) -> str:
         return SYSTEM_PROMPT
@@ -159,6 +185,18 @@ class BrainAgent(BaseAgent):
         pass
 
     def handle_request(self, user_input: str, io: WebSocketIO) -> None:
+        # ── 직전 턴에서 누락 파라미터를 물어봤다면, 이번 입력을 그 답으로 채운다.
+        #    (모델을 다시 태워 이미 준 정보를 또 묻는 것을 방지) ──
+        if self._pending is not None:
+            resumed = self._resume_pending(user_input)
+            if resumed is not None:
+                tool_name, params, reason = resumed
+                self.add_to_history("user", user_input)
+                self._dispatch(tool_name, params, reason, io)
+                return
+            # 답이 해당 필드로 해석되지 않으면 → 새 요청으로 간주하고 정상 처리
+            self._pending = None
+
         context = self.build_full_context(current_input=user_input)
 
         io.send_status("BrainAgent 처리 중...")
@@ -193,6 +231,14 @@ class BrainAgent(BaseAgent):
 
         params = decision.get("params", {})
 
+        # HV command / channels 정규화 + 사용자 입력에서 누락 인자 backfill
+        self._normalize_hv_params(tool_name, params)
+        self._backfill_params(tool_name, params, user_input)
+
+        # 이벤트 수 자릿수 방어: LLM 값을 입력 원문 기준으로 검증/교정
+        if tool_name == "daq_run":
+            self._verify_daq_events(params, user_input)
+
         # "방금"/"이번"/"last"/"지금" → infer run_number from state instead of asking
         if tool_name == "dqm_plot" and not params.get("run_number"):
             if re.search(r'(방금|이번|last|지금)', user_input.lower()):
@@ -202,12 +248,19 @@ class BrainAgent(BaseAgent):
                 if run_num:
                     params["run_number"] = int(run_num)
 
+        self._dispatch(tool_name, params, reason, io)
+
+    def _dispatch(self, tool_name: str, params: dict, reason: str, io: WebSocketIO) -> None:
+        """검증 → (필요 시)확인 → 잠금 → 실행. 누락 인자는 _pending에 저장 후 되묻는다."""
         missing = self._validate_params(tool_name, params)
         if missing:
-            _, question = missing
+            field, question = missing
+            self._pending = {"tool": tool_name, "params": params, "reason": reason}
             io.output_queue.put({"type": "adhoc_clarify", "question": question, "source": "brain"})
             io.send_status("대기 중")
             return
+
+        self._pending = None  # 모든 인자 충족 → 대기 상태 해제
 
         if tool_name in TOOLS_NEED_CONFIRM:
             preview = self._format_confirm_preview(tool_name, params)
@@ -251,6 +304,202 @@ class BrainAgent(BaseAgent):
 
         io.send_status("대기 중")
 
+    # ── 파라미터 정규화 / backfill / 클래리파이 재개 ──
+
+    @staticmethod
+    def _normalize_hv_params(tool_name: str, params: dict) -> None:
+        """모델이 tool 이름(read/write)을 command로 잘못 넣거나, 시스템 프롬프트의
+        예시 문구("모든 S 채널" 등)를 그대로 복사한 경우를 바로잡는다."""
+        if tool_name in ("hv_read", "hv_status"):
+            params["command"] = "status"
+        elif tool_name == "hv_write":
+            cmd = str(params.get("command", "")).lower()
+            if cmd not in _HV_WRITE_COMMANDS:
+                # "write"/"" 등 → 전압/전류 값이 있으면 voltage, 아니면 그대로 둠
+                if "voltage" in params or "value" in params:
+                    params["command"] = "voltage"
+                elif "current" in params:
+                    params["command"] = "current"
+
+        # channels가 프롬프트 예시 문구를 그대로 복사한 한국어 문자열이면 토큰으로 치환
+        ch = params.get("channels")
+        if isinstance(ch, str):
+            low = ch.strip().lower()
+            if "s 채널" in low or "s채널" in low or "s 만" in low or low in ("s만", "s"):
+                params["channels"] = "S"
+            elif "c 채널" in low or "c채널" in low or low in ("c만", "c"):
+                params["channels"] = "C"
+            elif "짝수" in low or low == "even":
+                params["channels"] = "even"
+            elif "홀수" in low or low == "odd":
+                params["channels"] = "odd"
+
+    def _backfill_params(self, tool_name: str, params: dict, user_input: str) -> None:
+        """모델이 놓친 인자를 사용자 입력 원문에서 직접 복구한다 (지어내지 않음)."""
+        if tool_name == "dqm_plot":
+            if not params.get("run_number"):
+                rn = self._extract_run_number_from_text(user_input)
+                if rn:
+                    params["run_number"] = rn
+            if not params.get("method"):
+                m = self._extract_method_from_text(user_input)
+                if m:
+                    params["method"] = m
+        elif tool_name == "daq_run":
+            if not params.get("events"):
+                ev = self._extract_events_from_text(user_input)
+                if ev:
+                    params["events"] = ev
+            if not params.get("config"):
+                cfg = self._extract_config_from_text(user_input)
+                if cfg:
+                    params["config"] = cfg
+
+    def _resume_pending(self, user_input: str):
+        """대기 중인 누락 필드를 이번 입력으로 채운다.
+        성공 시 (tool, params, reason) 반환, 해석 불가면 None."""
+        pend = self._pending
+        tool_name = pend["tool"]
+        params = dict(pend["params"])
+        filled = False
+
+        missing = self._validate_params(tool_name, params)
+        if not missing:
+            self._pending = None
+            return tool_name, params, pend.get("reason", "")
+        field, _ = missing
+
+        if field in ("run_number", "run_num"):
+            rn = self._extract_run_number_from_text(user_input)
+            if rn:
+                params[field] = rn
+                filled = True
+        elif field == "method":
+            m = self._extract_method_from_text(user_input)
+            if m:
+                params["method"] = m
+                filled = True
+        elif field == "events":
+            ev = self._extract_events_from_text(user_input)
+            if ev:
+                params["events"] = ev
+                filled = True
+                if not params.get("config"):
+                    cfg = self._extract_config_from_text(user_input)
+                    if cfg:
+                        params["config"] = cfg
+        elif field == "modules":
+            mods = self._extract_modules_from_text(user_input)
+            if mods:
+                params["modules"] = mods
+                filled = True
+        elif field == "x":
+            m = re.search(r'(-?\d+(?:\.\d+)?)\s*(?:mm)?', user_input)
+            if m:
+                params["x"] = float(m.group(1))
+                filled = True
+
+        if not filled:
+            return None
+        self._pending = {"tool": tool_name, "params": params, "reason": pend.get("reason", "")}
+        return tool_name, params, pend.get("reason", "")
+
+    @staticmethod
+    def _extract_run_number_from_text(text: str) -> Optional[int]:
+        m = re.search(r'(?:run|런|번)\s*(\d{3,})', text, re.IGNORECASE)
+        if not m:
+            m = re.search(r'(\d{4,})', text)  # 단독 4자리 이상 숫자
+        return int(m.group(1)) if m else None
+
+    @staticmethod
+    def _extract_method_from_text(text: str) -> Optional[str]:
+        t = text.lower()
+        if re.search(r'peak|피크', t):
+            return "PeakADC"
+        if re.search(r'int|적분|integral', t):
+            return "IntADC"
+        return None
+
+    # config 후보에서 제외할 일반 단어 (DAQ 관련 영어 표현들)
+    _CONFIG_STOPWORDS = {
+        "daq", "run", "runs", "event", "events", "evt", "evts", "data",
+        "start", "take", "collect", "get", "fire", "acquire", "please", "now", "with",
+    }
+
+    @classmethod
+    def _extract_config_from_text(cls, text: str) -> Optional[str]:
+        # config 이름은 임의 문자열(test, setup1, config1, physics ...)일 수 있다.
+        # [A-Za-z0-9_-]로 제한 — \w는 한글 조사("test로")까지 매칭하므로 사용 금지
+        # 1) 명시 키워드: "config setup1", "컨피그 test", "config=abc"
+        m = re.search(r'(?:config|컨피그|콘피그)\s*[:=]?\s*([A-Za-z][A-Za-z0-9_-]*)', text, re.IGNORECASE)
+        if m and m.group(1).lower() not in cls._CONFIG_STOPWORDS:
+            return m.group(1)
+        # 2) "<이름> 설정으로 / <이름> 셋업으로" 형태
+        m = re.search(r'([A-Za-z][A-Za-z0-9_-]*)\s*(?:설정|셋업|세팅)', text, re.IGNORECASE)
+        if m and m.group(1).lower() not in cls._CONFIG_STOPWORDS:
+            return m.group(1)
+        # 3) "<이름>으로/로 ..." 형태 (예: "setup1로 10000개", "test로 돌려줘")
+        m = re.search(r'([A-Za-z][A-Za-z0-9_-]*)(?:으로|로)(?=[\s,.!?]|$)', text, re.IGNORECASE)
+        if m and m.group(1).lower() not in cls._CONFIG_STOPWORDS:
+            return m.group(1)
+        return None
+
+    _EVENT_UNITS = {"k": 1000, "천": 1000, "만": 10000}
+
+    @classmethod
+    def _extract_event_candidates(cls, text: str) -> list:
+        """입력에서 이벤트 수 후보를 우선순위로 추출.
+        1순위: 개/이벤트/event 표기가 붙은 숫자 (run number 등과 구분),
+        표기 붙은 숫자가 없으면 2순위로 나머지 숫자 전부."""
+        t = _normalize_thousands_commas(text)  # "100,000개" → "100000개"
+        marked, others = [], []
+        # (?<![A-Za-z]) — "setup1" 같은 config 이름 속 숫자를 이벤트 수로 오인하지 않도록
+        for m in re.finditer(r'(?<![A-Za-z])(\d+)\s*(k|천|만)?', t, re.IGNORECASE):
+            n = int(m.group(1)) * cls._EVENT_UNITS.get((m.group(2) or "").lower(), 1)
+            if n <= 0:
+                continue
+            tail = t[m.end():m.end() + 12]
+            head = t[max(0, m.start() - 12):m.start()]
+            is_marked = bool(re.match(r'\s*(개|이벤트|events?|evts?)', tail, re.IGNORECASE)) \
+                or bool(re.search(r'(이벤트|events?|evts?)\s*$', head, re.IGNORECASE))
+            (marked if is_marked else others).append(n)
+        return marked if marked else others
+
+    @classmethod
+    def _extract_events_from_text(cls, text: str) -> Optional[int]:
+        cands = cls._extract_event_candidates(text)
+        return cands[0] if cands else None
+
+    def _verify_daq_events(self, params: dict, user_input: str) -> None:
+        """LLM이 넣은 events를 사용자 입력 기준으로 검증/교정 (자릿수 오류 방어).
+        입력에서 후보가 유일하면 그 값으로 확정. 후보가 여러 개인데 LLM 값이
+        그중 어느 것도 아니면(지어낸/자릿수 틀린 숫자) events를 비워 되묻는다."""
+        cands = self._extract_event_candidates(user_input)
+        if not cands:
+            return  # 입력에 숫자 없음 (예: "DAQ 돌려줘") → 기존 흐름(되묻기) 유지
+        ev = params.get("events")
+        if len(set(cands)) == 1:
+            true_val = cands[0]
+            if ev != true_val:
+                self.log(f"[Brain] events 자동 교정(입력 기준): LLM {ev!r} → {true_val}")
+                params["events"] = true_val
+            return
+        try:
+            if ev is not None and int(ev) in cands:
+                return  # 입력에 등장한 숫자 → 신뢰
+        except (TypeError, ValueError):
+            pass
+        self.log(f"[Brain] events {ev!r}가 입력 숫자 {cands}와 불일치 — 되묻기")
+        params["events"] = None
+
+    @staticmethod
+    def _extract_modules_from_text(text: str) -> list:
+        # T1-C / T1S / T5 / MCPPMT 등
+        if re.search(r'mcppmt', text, re.IGNORECASE):
+            return ["MCPPMT"]
+        mods = re.findall(r'T\d(?:-?[CS])?', text, re.IGNORECASE)
+        return [m.upper() for m in mods] if mods else []
+
     @staticmethod
     def _format_dispatch_msg(tool_name: str, params: dict, reason: str) -> str:
         lines = [f"Tool: {tool_name}"]
@@ -265,7 +514,9 @@ class BrainAgent(BaseAgent):
     def _format_confirm_preview(tool_name: str, params: dict) -> str:
         if tool_name == "daq_run":
             events = params.get("events", "?")
-            return f"DAQ 실행\n  이벤트 수: {events:,}" if isinstance(events, int) else f"DAQ 실행\n  이벤트 수: {events}"
+            config = params.get("config", "setup")
+            events_str = f"{events:,}" if isinstance(events, int) else f"{events}"
+            return f"DAQ 실행\n  Config: {config}\n  이벤트 수: {events_str}"
         if tool_name == "hv_write":
             cmd = params.get("command", "?")
             ch = params.get("channels", "?")
@@ -408,7 +659,9 @@ class BrainAgent(BaseAgent):
                 elif tool_name in ("hv_read", "hv_status"):
                     from tools.hv_control_tool import HVControlTool
                     from tools.hodoscope_hv_tool import HodoscopeHVTool
-                    params.setdefault("command", "status")
+                    # hv_read는 항상 status. 모델이 "read"/"write" 등 엉뚱한 command를
+                    # 내보내도 무조건 status로 강제한다.
+                    params["command"] = "status"
                     result_caen = HVControlTool().execute(params)
                     try:
                         result_hodo = HodoscopeHVTool().execute({"command": "read"})
