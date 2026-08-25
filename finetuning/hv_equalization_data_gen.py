@@ -1,15 +1,5 @@
 #!/usr/bin/env python3
-"""
-Training data generator for HV Equalization Agent
-
-autoTB 이전 버전과의 차이:
-  Step 1a (이동해주세요) →
-    1a-i.  motor_x_move_tool  (자동 X 이동)
-    1a-ii. Y축 수동 이동 메시지
-
-build_full_context / _build_state_context / _get_step_hint 포맷이
-HVEqualizationAgent(hv_equalization_agent.py)와 완전히 동일하도록 유지.
-"""
+"""HV Equalization Agent의 워크플로우 학습 데이터를 생성한다."""
 
 import json
 import random
@@ -19,9 +9,14 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+from agents.base_agent import build_prompt_context
 from config import MSG_PLOT_CONFIRM, MSG_HV_CONFIRM
-
-TOWER_ORDER = ["T1", "T2", "T3", "T6", "T5", "T4", "T7", "T8", "T9"]
+from finetuning.data_gen_common import (
+    TOWER_ORDER,
+    make_example as _make_example,
+    random_events,
+    write_dataset,
+)
 
 MESSAGE_Y_MOVE_REQ   = "X축 자동 이동 완료 ({x:.3f} mm). Y축을 {y:.3f}으로 이동해주세요."
 MESSAGE_PLOT_CONFIRM = MSG_PLOT_CONFIRM
@@ -30,11 +25,6 @@ MESSAGE_HV_CONFIRM   = MSG_HV_CONFIRM
 MESSAGE_APPROVE_BOTH = "분석 결과, 현재 ADC: {c}={adc_c:.1f}, {s}={adc_s:.1f} (목표: {target}). HV 변경 제안: {c} {hv_c_old}V→{hv_c_new}V, {s} {hv_s_old}V→{hv_s_new}V. 적용하시겠습니까?"
 MESSAGE_APPROVE_C    = "분석 결과, 현재 ADC: {c}={adc_c:.1f} (목표: {target}). HV 변경 제안: {c} {hv_c_old}V→{hv_c_new}V, {s} 완료(변경 없음). 적용하시겠습니까?"
 MESSAGE_APPROVE_S    = "분석 결과, 현재 ADC: {s}={adc_s:.1f} (목표: {target}). HV 변경 제안: {c} 완료(변경 없음), {s} {hv_s_old}V→{hv_s_new}V. 적용하시겠습니까?"
-
-
-def random_events() -> int:
-    digits = random.randint(3, 6)
-    return random.randint(10 ** (digits - 1), 10 ** digits - 1)
 
 
 def _make_system_prompt(tower: str, x: float, y: float) -> str:
@@ -169,16 +159,6 @@ def _build_state_context(state: Dict) -> str:
     return "\n".join(lines)
 
 
-def _build_history_context(history: List[Dict]) -> str:
-    if not history:
-        return "(No conversation yet)"
-    lines = []
-    for msg in history[-10:]:
-        role = "User" if msg["role"] == "user" else "Agent"
-        lines.append(f"{role}: {msg['content']}")
-    return "\n".join(lines)
-
-
 def _get_step_hint(state: Dict) -> str:
     tower = state["current_tower"]
     adc_known = state.get("last_adc_c") is not None
@@ -212,25 +192,12 @@ def _get_step_hint(state: Dict) -> str:
 
 
 def build_full_context(state: Dict, history: List[Dict], current_input: Optional[str] = None) -> str:
-    if current_input is None and history and history[-1]["role"] == "user":
-        current_input = history[-1]["content"]
-        temp_history = history[:-1]
-    else:
-        temp_history = history
-
-    parts = ["=== Current State ===", _build_state_context(state), ""]
-    parts.append("=== Recent Conversation ===")
-    parts.append(_build_history_context(temp_history))
-    parts.append("")
-    if current_input:
-        parts.append("=== Current User Input ===")
-        parts.append(current_input)
-        parts.append("")
-    parts.append("=== Your Task ===")
-    parts.append(_get_step_hint(state))
-    parts.append("")
-    parts.append("Output JSON with tool name and parameters.")
-    return "\n".join(parts)
+    return build_prompt_context(
+        _build_state_context(state),
+        history,
+        current_input=current_input,
+        step_hint=_get_step_hint(state),
+    )
 
 
 def make_example(state: Dict, history: List[Dict], decision: Dict,
@@ -238,15 +205,11 @@ def make_example(state: Dict, history: List[Dict], decision: Dict,
     tower = state["current_tower"]
     pos_x = state.get("tower_pos", {}).get("x", 0.0)
     pos_y = state.get("tower_pos", {}).get("y", 0.0)
-    system_prompt = _make_system_prompt(tower, pos_x, pos_y)
-    ctx = build_full_context(state, history, current_input)
-    return {
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user",   "content": ctx},
-            {"role": "assistant", "content": json.dumps(decision, ensure_ascii=False)},
-        ]
-    }
+    return _make_example(
+        _make_system_prompt(tower, pos_x, pos_y),
+        build_full_context(state, history, current_input),
+        decision,
+    )
 
 
 CONVERGENCE_PATTERNS = [
@@ -264,9 +227,7 @@ CONVERGENCE_PATTERNS = [
     [(False, False), (False, False), (True,  False), (True, True)],
 ]
 
-# Manual HV adjustment scenarios for LLM-based update_state flow
-# (text, kind, value)
-# kind: C_abs, S_abs, C_delta, S_delta, both_abs, cs_abs
+# 수동 HV 조정 사례: (문장, 조정 유형, 값).
 MANUAL_ADJUST_SCENARIOS = [
     ("C를 810으로 바꿔줘",          "C_abs",   810),
     ("S를 820으로 설정해줘",         "S_abs",   820),
@@ -604,7 +565,7 @@ def generate_manual_adjust_workflow(tower: str, x: float, y: float,
         "approval_confirmed": False,
     }
 
-    # Build partial history: motor, Y-move, status, DAQ, suggest already done
+    # 수동 조정 전까지의 측정 결과를 만든다.
     adc_frac = random.uniform(0.82, 0.95)
     adc_c = round(target_adc * adc_frac + random.uniform(-8, 8), 1)
     adc_s = round(target_adc * adc_frac + random.uniform(-8, 8), 1)
@@ -613,7 +574,7 @@ def generate_manual_adjust_workflow(tower: str, x: float, y: float,
     next_hv_c = hv_c + (delta_c if not done_c else 0)
     next_hv_s = hv_s + (delta_s if not done_s else 0)
 
-    # Prepopulate history with steps 1a-i through 1d
+    # 이동, HV 조회, DAQ, 조정 제안 이력을 구성한다.
     history.append({"role": "assistant", "content": json.dumps(
         {"tool": "motor_x_move_tool", "params": {"x": x}}, ensure_ascii=False)})
     history.append({"role": "assistant", "content": json.dumps(
@@ -632,30 +593,29 @@ def generate_manual_adjust_workflow(tower: str, x: float, y: float,
         {"tool": "hv_equalization_suggest", "params": {"run_number": run_number, "tower": tower}},
         ensure_ascii=False)})
 
-    # State after suggest
+    # 조정 제안 이후 상태.
     state["last_adc_c"] = adc_c
     state["last_adc_s"] = adc_s
     state["last_suggested_hv_c"] = next_hv_c
     state["last_suggested_hv_s"] = next_hv_s
 
-    # Step 1e: approval message (agent output)
+    # Agent가 제안한 승인 메시지를 대화 이력에 추가한다.
     approval_msg = _build_approval_msg(done_c, done_s, adc_c, adc_s,
                                        int(target_adc), hv_c, hv_s, next_hv_c, next_hv_s, tower)
     dec_approval = {"message": approval_msg, "update_state": {"phase": "approving"}}
-    # This is NOT a training example itself; it's what the agent already said
     history.append({"role": "assistant", "content": json.dumps(dec_approval, ensure_ascii=False)})
     state["phase"] = "approving"
 
-    # Now: user sends manual adjustment request
+    # 사용자의 수동 조정 요청.
     adj_text, adj_kind, adj_value = adjust_scenario
     history.append({"role": "user", "content": adj_text})
 
-    # Compute new adjusted HV values
+    # 조정된 HV 값.
     adj_hv_c, adj_hv_s = _apply_manual_adjust(
         next_hv_c, next_hv_s, adj_kind, adj_value, done_c, done_s
     )
 
-    # Training example: LLM must output updated approval + update_state
+    # 조정 결과를 반영한 승인 사례.
     updated_approval_msg = _build_approval_msg(done_c, done_s, adc_c, adc_s,
                                                int(target_adc), hv_c, hv_s, adj_hv_c, adj_hv_s, tower)
     update_state_dict: Dict[str, Any] = {}
@@ -667,16 +627,16 @@ def generate_manual_adjust_workflow(tower: str, x: float, y: float,
     dec_update = {"message": updated_approval_msg, "update_state": update_state_dict}
     examples.append(make_example(state, history, dec_update, current_input=adj_text))
 
-    # Continue history: agent outputs updated approval
+    # 갱신된 승인 메시지를 이력에 추가한다.
     history.append({"role": "assistant", "content": json.dumps(dec_update, ensure_ascii=False)})
     state["last_suggested_hv_c"] = adj_hv_c
     state["last_suggested_hv_s"] = adj_hv_s
 
-    # User says 완료
+    # 사용자가 조정값을 승인한다.
     history.append({"role": "user", "content": "완료"})
-    state["approval_confirmed"] = True  # 조정값 확인 → voltage 적용
+    state["approval_confirmed"] = True
 
-    # Training example: LLM applies voltage (step 1f)
+    # 승인된 전압을 적용하는 학습 사례.
     cv = {}
     if not done_c:
         cv[f"{tower}C"] = adj_hv_c
@@ -691,9 +651,6 @@ def generate_manual_adjust_workflow(tower: str, x: float, y: float,
 
 
 def main():
-    output_file = Path(__file__).parent / "data" / "hv_equalization_data.json"
-    output_file.parent.mkdir(parents=True, exist_ok=True)
-
     all_ex = []
     TARGET_ADC_CHOICES = [800, 900, 1000, 1100, 1200, 1300, 1400, 1500, 1600]
     ENERGY_CHOICES = [10, 20, 50, 100, 200, 250]
@@ -770,13 +727,7 @@ def main():
 
     random.shuffle(all_ex)
 
-    with open(output_file, "w", encoding="utf-8") as f:
-        for ex in all_ex:
-            f.write(json.dumps(ex, ensure_ascii=False) + "\n")
-
-    lengths = [sum(len(m["content"]) for m in ex["messages"]) for ex in all_ex]
-    print(f"Generated {len(all_ex)} samples -> {output_file}")
-    print(f"   char len  max={max(lengths):,}  avg={sum(lengths)/len(lengths):,.0f}")
+    write_dataset("hv_equalization_data.json", all_ex)
 
 
 if __name__ == "__main__":

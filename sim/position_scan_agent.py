@@ -1,13 +1,5 @@
 #!/usr/bin/env python3
-"""Position Scan Agent — 완전 simulation mode (no hardware, run_web_sim.py).
-
-agents.position_scan_agent를 상속해 워크플로우/cross 판정/보간/결과저장은 그대로 공유하고,
-하드웨어 호출(motor/daq)과 peakADC 측정(_measure_peakadc)을 모두 mock한다.
-
-peakADC 모델은 sim.position_scan_sim_model.PositionScanPeakADCSimMixin에서 가져온다
-(run_web.py의 Sim-ADC 변종 agents/position_scan_sim_agent.py와 공유 — drift 방지).
-DAQ까지 실제로 돌리고 peakADC만 mock하는 변종은 agents/position_scan_sim_agent.py에 있다.
-"""
+"""모터, DAQ, peakADC 측정을 모의 실행하는 Position Scan Agent."""
 
 from typing import Dict
 
@@ -31,7 +23,7 @@ class PositionScanSimAgent(SimExecMixin, PositionScanPeakADCSimMixin, PositionSc
 
         if tool_name == "motor_x_move_tool":
             x = self._motor_x_for_current_step()
-            # override(state 기준 x) 후 표시 — 표시값과 실제 이동값 일치.
+            # 상태의 X 좌표로 시뮬레이션 매개변수를 확정한다.
             self._sim_emit_tool_call(tool_name, {"x": x})
             self.io.send_tool_output(f"[Motor] X축 이동 시작 (Position Scan): {x:.3f} mm")
             result = self._sim.motor_move(x, self.state["center_tower"])
@@ -40,8 +32,7 @@ class PositionScanSimAgent(SimExecMixin, PositionScanPeakADCSimMixin, PositionSc
             return result
 
         if tool_name == "daq_run_tool":
-            # 공통부(_sim_run_daq): params override → 표시 → 실행 → run# 추출 → plot 대기.
-            # 표시가 override "뒤"에 찍혀 실제 실행 위치/에너지와 일치한다.
+            # 공통 시뮬레이션 경로로 DAQ를 실행하고 플롯 확인을 기다린다.
             result, run_number = self._sim_run_daq(
                 params,
                 events=self.state.get("target_events"),

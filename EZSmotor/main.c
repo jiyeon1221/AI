@@ -1,29 +1,11 @@
-/* ============================================================
- *  main.c — azd_kren command-line interface
- *
- *  Build:  make
- *
- *  Quick reference:
- *    ./azd_kren --status
- *    ./azd_kren --home
- *    ./azd_kren --moveto 10.5
- *    ./azd_kren --move -3.0 --speed 5.0
- *    ./azd_kren --sethome
- *    ./azd_kren --stop
- *    ./azd_kren --ip 192.168.1.3 --moveto 15.0
- *
- *  Home offset:
- *    --sethome saves the current raw position to ~/.azd_kren_home.
- *    All subsequent --moveto / --pos commands are expressed relative
- *    to that saved origin.  --home (origin-return) clears the offset.
- * ============================================================ */
+/* azd_kren 모터의 상태 확인, 원점 설정, 이동 명령을 제공한다. */
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "azd_kren.h"
 
-/* ── Home-offset persistence ────────────────────────────────────────────── */
+/* 사용자 원점 오프셋 저장. */
 
 static const char *home_file_path(void)
 {
@@ -51,7 +33,7 @@ static void save_home_offset(float raw_mm)
     fclose(f);
 }
 
-/* ── Command enum ───────────────────────────────────────────────────────── */
+/* 명령 종류. */
 typedef enum {
     CMD_NONE,
     CMD_STATUS,
@@ -66,7 +48,7 @@ typedef enum {
     CMD_ALARM_RESET,
 } Command;
 
-/* ── Usage ──────────────────────────────────────────────────────────────── */
+/* 명령행 도움말. */
 static void print_usage(const char *prog)
 {
     printf(

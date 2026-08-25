@@ -6,85 +6,102 @@
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
   html, body { height: 100%; font-family: 'Segoe UI', system-ui, sans-serif;
-               background: #0f1117; color: #dde1f0; }
-  #wrap { display: flex; height: 100vh; }
+               background: #f4f6f8; color: #202124; }
+  #wrap { display: flex; flex-direction: column; height: 100vh; }
+  /* 상단: 실행 기록, 크기 조절선, 플롯 영역. */
+  #top-region { display: flex; flex: 1; min-height: 0; }
 
-  /* ── Sidebar ── */
-  #sidebar { width: 340px; min-width: 200px; max-width: 70vw; flex-shrink: 0;
-             background: #1a1d27;
-             border-right: 1px solid #2c2f3e; display: flex; flex-direction: column; }
-  /* Drag handle between the sidebar and #main to resize the sidebar. */
-  #gutter { width: 6px; flex-shrink: 0; cursor: col-resize; background: #2c2f3e; }
-  #gutter:hover, #gutter.dragging { background: #4f8ef7; }
+  /* 하단: 명령 구성과 진행 로그. */
+  #bottombar {
+    display: flex; height: 260px; flex-shrink: 0;
+    border-top: 2px solid #dadce0; background: #ffffff;
+  }
+  #bottombar #cmd-section {
+    width: 440px; flex-shrink: 0; border-right: 1px solid #dadce0;
+    border-bottom: none; overflow-y: auto;
+  }
+  /* 로그는 하단의 남은 너비를 채운다. */
+  #bottombar #live-log-wrap {
+    display: flex !important; flex: 1; max-height: none; min-height: 0;
+    border-top: none;
+  }
+
+  /* 실행 기록 사이드바. */
+  #sidebar { width: 300px; min-width: 200px; max-width: 70vw; flex-shrink: 0;
+             background: #ffffff;
+             border-right: 1px solid #dadce0; display: flex; flex-direction: column; }
+  /* 사이드바 너비 조절선. */
+  #gutter { width: 6px; flex-shrink: 0; cursor: col-resize; background: #dadce0; }
+  #gutter:hover, #gutter.dragging { background: #4285f4; }
   body.col-resizing { cursor: col-resize; user-select: none; }
-  #sidebar header { padding: 12px 14px; border-bottom: 1px solid #2c2f3e; }
-  #sidebar header h1 { font-size: 14px; color: #4f8ef7; margin-bottom: 0; }
+  #sidebar header { padding: 12px 14px; border-bottom: 1px solid #dadce0; }
+  #sidebar header h1 { font-size: 14px; color: #4285f4; margin-bottom: 0; }
 
-  /* ── Command builder ── */
-  .cmd-section { padding: 10px 14px; border-bottom: 1px solid #2c2f3e; }
-  .cmd-section h2 { font-size: 11px; color: #7a7f99; text-transform: uppercase;
+  /* 명령 구성기. */
+  .cmd-section { padding: 10px 14px; border-bottom: 1px solid #dadce0; }
+  .cmd-section h2 { font-size: 11px; color: #5f6368; text-transform: uppercase;
                      letter-spacing: 0.5px; margin-bottom: 8px; cursor: pointer; user-select: none; }
-  .cmd-section h2:hover { color: #9ca0b8; }
+  .cmd-section h2:hover { color: #5f6368; }
   .cmd-section h2::before { content: '▾ '; font-size: 9px; }
   .cmd-section.collapsed h2::before { content: '▸ '; }
   .cmd-section.collapsed .cmd-body { display: none; }
   .cmd-row { display: flex; gap: 6px; margin-bottom: 6px; align-items: center; }
-  .cmd-row label { font-size: 11px; color: #9ca0b8; width: 52px; flex-shrink: 0; text-align: right; }
+  .cmd-row label { font-size: 11px; color: #5f6368; width: 52px; flex-shrink: 0; text-align: right; }
   .cmd-row input, .cmd-row select {
-    flex: 1; padding: 5px 8px; background: #0f1117;
-    border: 1px solid #2c2f3e; border-radius: 4px; color: #dde1f0; font-size: 12px;
+    flex: 1; padding: 5px 8px; background: #f4f6f8;
+    border: 1px solid #dadce0; border-radius: 4px; color: #202124; font-size: 12px;
   }
   .cmd-row select { cursor: pointer; }
   .run-stepper { flex: 1; display: flex; align-items: stretch; }
   .run-stepper input { flex: 1; border-top-right-radius: 0; border-bottom-right-radius: 0; }
-  /* Hide the browser's native number spinners; use our own arrows instead. */
+  /* 기본 숫자 스피너를 숨기고 사용자 정의 버튼을 사용한다. */
   .run-stepper input::-webkit-outer-spin-button,
   .run-stepper input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
   .run-stepper input { -moz-appearance: textfield; }
   .run-stepper-btns { display: flex; flex-direction: column; }
   .run-step {
     flex: 1; width: 22px; padding: 0; line-height: 1;
-    background: #1a1d29; color: #9ca0b8; font-size: 8px; cursor: pointer;
-    border: 1px solid #2c2f3e; border-left: none;
+    background: #f1f3f4; color: #5f6368; font-size: 8px; cursor: pointer;
+    border: 1px solid #dadce0; border-left: none;
   }
   .run-step:first-child { border-top-right-radius: 4px; border-bottom: none; }
   .run-step:last-child { border-bottom-right-radius: 4px; }
-  .run-step:hover { background: #23273a; color: #4f8ef7; }
+  .run-step:hover { background: #eef0f3; color: #4285f4; }
   .cmd-flags { display: flex; gap: 10px; flex-wrap: wrap; margin: 6px 0; }
-  .cmd-flags label { font-size: 11px; color: #9ca0b8; cursor: pointer; display: flex; align-items: center; gap: 3px; width: auto; }
-  .cmd-flags input[type="checkbox"] { accent-color: #4f8ef7; }
+  .cmd-flags label { font-size: 11px; color: #5f6368; cursor: pointer; display: flex; align-items: center; gap: 3px; width: auto; }
+  .cmd-flags input[type="checkbox"] { accent-color: #4285f4; }
   .cmd-preview {
-    background: #12141e; border: 1px solid #2c2f3e; border-radius: 4px;
+    background: #f1f3f4; border: 1px solid #dadce0; border-radius: 4px;
     padding: 6px 8px; font-family: 'SF Mono', 'Fira Code', monospace;
-    font-size: 10px; color: #8bc34a; word-break: break-all; margin-top: 6px;
+    font-size: 10px; color: #188038; word-break: break-all; margin-top: 6px;
   }
-  .cmd-preview span { color: #7a7f99; }
+  .cmd-preview span { color: #5f6368; }
   #exec-btn {
     width: 100%; padding: 8px; margin-top: 8px;
     background: #4caf50; color: #fff; border: none; border-radius: 4px;
     font-size: 12px; font-weight: 600; cursor: pointer;
   }
   #exec-btn:hover { background: #43a047; }
-  #exec-btn:disabled { background: #555; cursor: not-allowed; }
+  #exec-btn:disabled { background: #dadce0; cursor: not-allowed; }
   #kill-live-btn {
     display: none; width: 100%; padding: 8px; margin-top: 6px;
     background: #c62828; color: #fff; border: none; border-radius: 4px;
     font-size: 12px; font-weight: 600; cursor: pointer; animation: pulse 1.4s infinite;
   }
   #kill-live-btn:hover { background: #b71c1c; animation: none; }
-  #kill-live-btn:disabled { background: #555; cursor: not-allowed; animation: none; }
+  #kill-live-btn:disabled { background: #dadce0; cursor: not-allowed; animation: none; }
   @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:.65; } }
-  #exec-status { font-size: 11px; color: #7a7f99; margin-top: 6px; min-height: 16px; }
+  #exec-status { font-size: 11px; color: #5f6368; margin-top: 6px; min-height: 16px; }
 
-  /* ── Live log pane ── */
+  /* 실시간 로그. */
   #live-log-wrap {
-    display: none; border-top: 1px solid #2c2f3e; flex-direction: column;
+    display: none; border-top: 1px solid #dadce0; flex-direction: column;
     max-height: 260px; min-height: 80px;
   }
   #live-log-wrap.visible { display: flex; }
   #live-log-header {
     padding: 5px 14px; display: flex; align-items: center; justify-content: space-between;
-    font-size: 10px; color: #7a7f99; text-transform: uppercase; letter-spacing: 0.5px;
+    font-size: 10px; color: #5f6368; text-transform: uppercase; letter-spacing: 0.5px;
     flex-shrink: 0;
   }
   #live-log-header span { display: flex; align-items: center; gap: 5px; }
@@ -93,58 +110,58 @@
   #live-log {
     flex: 1; overflow-y: auto; padding: 4px 10px 8px;
     font-family: 'SF Mono', 'Fira Code', 'Courier New', monospace;
-    font-size: 10px; color: #c5cae9; line-height: 1.5;
-    background: #0a0c14; white-space: pre-wrap; word-break: break-all;
+    font-size: 10px; color: #3c4043; line-height: 1.5;
+    background: #f8f9fa; white-space: pre-wrap; word-break: break-all;
   }
-  /* Progress lines ("N / M events ...") are updated in place; tint yellow. */
-  #live-log div[data-prog="1"] { color: #ffd54a; }
-  /* File-ready status cells on '|' table rows: O = ready (green), X = wait (red). */
+  /* 진행 줄은 제자리에서 갱신하고 노란색으로 표시한다. */
+  #live-log div[data-prog="1"] { color: #a86500; }
+  /* 파일 준비 상태는 O(초록)와 X(빨강)로 표시한다. */
   #live-log .cell-o { color: #4caf50; font-weight: 700; }
   #live-log .cell-x { color: #f44336; font-weight: 700; }
 
-  /* ── Run browser ── */
+  /* 실행 결과 탐색기. */
   #run-browser { flex: 1; overflow-y: auto; display: flex; flex-direction: column; }
   .browser-header {
-    padding: 8px 14px; border-bottom: 1px solid #2c2f3e;
+    padding: 8px 14px; border-bottom: 1px solid #dadce0;
     display: flex; align-items: center; justify-content: space-between;
   }
-  .browser-header h2 { font-size: 11px; color: #7a7f99; text-transform: uppercase; letter-spacing: 0.5px; }
+  .browser-header h2 { font-size: 11px; color: #5f6368; text-transform: uppercase; letter-spacing: 0.5px; }
   .browser-header button {
-    background: none; border: 1px solid #2c2f3e; border-radius: 3px;
-    color: #7a7f99; font-size: 10px; padding: 2px 8px; cursor: pointer;
+    background: none; border: 1px solid #dadce0; border-radius: 3px;
+    color: #5f6368; font-size: 10px; padding: 2px 8px; cursor: pointer;
   }
-  .browser-header button:hover { color: #dde1f0; border-color: #4f8ef7; }
+  .browser-header button:hover { color: #202124; border-color: #4285f4; }
   #run-list { flex: 1; overflow-y: auto; padding: 4px 8px; }
   .run-group { margin-bottom: 2px; }
   .run-head {
     padding: 7px 10px; border-radius: 4px; cursor: pointer; font-size: 12px;
     display: flex; align-items: center; gap: 6px; user-select: none;
   }
-  .run-head:hover { background: #23273a; }
-  .run-head .arrow { font-size: 9px; color: #7a7f99; width: 10px; }
-  .run-head .run-num { font-weight: 600; color: #dde1f0; }
+  .run-head:hover { background: #eef0f3; }
+  .run-head .arrow { font-size: 9px; color: #5f6368; width: 10px; }
+  .run-head .run-num { font-weight: 600; color: #202124; }
   .run-head .badge {
     font-size: 9px; padding: 1px 5px; border-radius: 3px;
     font-weight: 600; text-transform: uppercase;
   }
-  .badge-method { background: #1e3a5f; color: #64b5f6; }
-  .badge-auxcut { background: #4a2c00; color: #ffb74d; }
-  .run-head .count { font-size: 10px; color: #7a7f99; margin-left: auto; }
+  .badge-method { background: #e8f0fe; color: #1967d2; }
+  .badge-auxcut { background: #fef7e0; color: #b06000; }
+  .run-head .count { font-size: 10px; color: #5f6368; margin-left: auto; }
   .run-canvases { display: none; padding-left: 20px; }
   .run-group.open > .run-canvases { display: block; }
-  .run-group.open > .run-head { background: #1e2233; }
-  .run-group.open > .run-head .arrow { color: #4f8ef7; }
+  .run-group.open > .run-head { background: #e8f0fe; }
+  .run-group.open > .run-head .arrow { color: #4285f4; }
   .canvas-item {
     padding: 6px 10px; margin-bottom: 2px; border-radius: 4px;
     cursor: pointer; font-size: 12px; border: 1px solid transparent;
   }
-  .canvas-item:hover { background: #23273a; border-color: #4f8ef7; }
-  .canvas-item.active { background: #2a3148; border-color: #4f8ef7; color: #4f8ef7; }
-  .canvas-item .meta { display: block; font-size: 10px; color: #7a7f99; margin-top: 1px; }
+  .canvas-item:hover { background: #eef0f3; border-color: #4285f4; }
+  .canvas-item.active { background: #e8f0fe; border-color: #4285f4; color: #1967d2; }
+  .canvas-item .meta { display: block; font-size: 10px; color: #5f6368; margin-top: 1px; }
 
-  /* ── Sidebar footer (Kill-all / Close-all buttons, pinned bottom) ── */
+  /* 전체 종료·닫기 버튼 영역. */
   #sidebar-footer {
-    padding: 10px 12px; border-top: 1px solid #2c2f3e;
+    padding: 10px 12px; border-top: 1px solid #dadce0;
     display: flex; flex-direction: column; gap: 6px; flex-shrink: 0;
   }
   .sidebar-action-btn {
@@ -152,31 +169,31 @@
     font-size: 11px; font-weight: 600; cursor: pointer; letter-spacing: 0.3px;
   }
   .sidebar-action-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-  .sidebar-action-btn.neutral { background: #2c2f3e; color: #dde1f0; }
-  .sidebar-action-btn.neutral:hover:not(:disabled) { background: #3a3f55; }
+  .sidebar-action-btn.neutral { background: #dadce0; color: #202124; }
+  .sidebar-action-btn.neutral:hover:not(:disabled) { background: #e0e0e0; }
   .sidebar-action-btn.danger { background: #c62828; color: #fff; }
   .sidebar-action-btn.danger:hover:not(:disabled) { background: #b71c1c; }
 
-  /* ── Main draw area (now a positioned canvas hosting floating windows) ── */
+  /* 플로팅 플롯 창을 배치하는 주 영역. */
   #main { flex: 1; padding: 12px; overflow: hidden; display: flex; flex-direction: column; }
-  #main header { font-size: 12px; color: #7a7f99; margin-bottom: 8px;
-                 padding-bottom: 8px; border-bottom: 1px solid #2c2f3e;
+  #main header { font-size: 12px; color: #5f6368; margin-bottom: 8px;
+                 padding-bottom: 8px; border-bottom: 1px solid #dadce0;
                  display: flex; align-items: center; justify-content: space-between; }
-  #main header .window-count { font-size: 11px; color: #7a7f99; }
+  #main header .window-count { font-size: 11px; color: #5f6368; }
   #draw-area {
-    flex: 1; position: relative; border: 1px dashed #2c2f3e; border-radius: 6px;
-    background: #0a0c14; overflow: hidden;
+    flex: 1; position: relative; border: 1px dashed #dadce0; border-radius: 6px;
+    background: #f8f9fa; overflow: hidden;
   }
   #draw-welcome {
     position: absolute; inset: 0;
     display: flex; align-items: center; justify-content: center;
-    color: #7a7f99; font-size: 13px; pointer-events: none; text-align: center; padding: 20px;
+    color: #5f6368; font-size: 13px; pointer-events: none; text-align: center; padding: 20px;
   }
   #draw-area.has-windows #draw-welcome { display: none; }
 
-  /* Floating plot windows (drag-to-move, resize from bottom-right corner). */
+  /* 이동과 크기 조절이 가능한 플롯 창. */
   .plot-window {
-    position: absolute; background: #fff; border: 1px solid #2c2f3e;
+    position: absolute; background: #fff; border: 1px solid #dadce0;
     border-radius: 6px; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
     min-width: 320px; min-height: 240px;
     display: flex; flex-direction: column; z-index: 1;
@@ -184,8 +201,8 @@
   }
   .plot-window.active { z-index: 100; box-shadow: 0 6px 20px rgba(79, 142, 247, 0.45); }
   .plot-window-header {
-    background: linear-gradient(135deg, #1e3a5f 0%, #2a3148 100%);
-    color: #dde1f0; padding: 6px 10px;
+    background: linear-gradient(135deg, #4285f4 0%, #3367d6 100%);
+    color: #fff; padding: 6px 10px;
     border-radius: 6px 6px 0 0;
     display: flex; align-items: center; justify-content: space-between;
     cursor: move; user-select: none;
@@ -215,50 +232,51 @@
     position: absolute; inset: 0; display: flex; align-items: center;
     justify-content: center; padding: 20px; text-align: center; font-size: 12px;
   }
-  .plot-window-loading { color: #7a7f99; }
+  .plot-window-loading { color: #5f6368; }
   .plot-window-error { color: #c62828; }
 
-  /* Kill confirmation modal. */
+  /* 프로세스 종료 확인 창. */
   .modal-backdrop {
     display: none; position: fixed; inset: 0; z-index: 1000;
     background: rgba(0, 0, 0, 0.6); align-items: center; justify-content: center;
   }
   .modal-backdrop.visible { display: flex; }
   .modal-content {
-    background: #1a1d27; color: #dde1f0; border: 1px solid #2c2f3e;
+    background: #ffffff; color: #202124; border: 1px solid #dadce0;
     border-radius: 8px; padding: 18px 20px; width: 580px; max-width: 95vw;
     max-height: 80vh; display: flex; flex-direction: column; gap: 10px;
   }
-  .modal-content h3 { font-size: 14px; color: #ffb74d; }
-  .modal-content p { font-size: 12px; color: #c5cae9; }
+  .modal-content h3 { font-size: 14px; color: #b06000; }
+  .modal-content p { font-size: 12px; color: #3c4043; }
   .modal-content .modal-list {
     flex: 1; min-height: 80px; max-height: 320px; overflow-y: auto;
-    background: #0f1117; border: 1px solid #2c2f3e; border-radius: 4px;
+    background: #f4f6f8; border: 1px solid #dadce0; border-radius: 4px;
     padding: 8px; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 11px;
   }
   .modal-list .proc-row {
-    background: #12141e; margin-bottom: 4px; padding: 6px 8px;
+    background: #f1f3f4; margin-bottom: 4px; padding: 6px 8px;
     border-radius: 3px; border-left: 3px solid #c62828;
   }
-  .modal-list .proc-row .pid { color: #ff8a80; font-weight: 600; }
-  .modal-list .proc-row .cmd { color: #c5cae9; margin-top: 3px; word-break: break-all; }
+  .modal-list .proc-row .pid { color: #c5221f; font-weight: 600; }
+  .modal-list .proc-row .cmd { color: #3c4043; margin-top: 3px; word-break: break-all; }
   .modal-buttons { display: flex; gap: 8px; justify-content: flex-end; }
   .modal-buttons button {
     padding: 7px 14px; border: none; border-radius: 4px;
     font-size: 12px; font-weight: 600; cursor: pointer;
   }
-  .modal-buttons .btn-cancel { background: #444; color: #fff; }
-  .modal-buttons .btn-cancel:hover { background: #555; }
+  .modal-buttons .btn-cancel { background: #e0e0e0; color: #202124; }
+  .modal-buttons .btn-cancel:hover { background: #d2d2d2; }
   .modal-buttons .btn-confirm-kill { background: #c62828; color: #fff; }
   .modal-buttons .btn-confirm-kill:hover:not(:disabled) { background: #b71c1c; }
   .modal-buttons button:disabled { opacity: 0.5; cursor: not-allowed; }
-  .modal-error { font-size: 11px; color: #ff8a80; min-height: 14px; }
+  .modal-error { font-size: 11px; color: #c5221f; min-height: 14px; }
 
-  .empty { color: #7a7f99; font-size: 13px; padding: 20px; text-align: center; }
+  .empty { color: #5f6368; font-size: 13px; padding: 20px; text-align: center; }
 </style>
 </head>
 <body>
 <div id="wrap">
+  <div id="top-region">
   <div id="sidebar">
     <header>
       <div style="display:flex;align-items:center;gap:8px;">
@@ -267,6 +285,43 @@
       </div>
     </header>
 
+    <div id="run-browser">
+      <div class="browser-header">
+        <h2>Run History</h2>
+        <button onclick="loadRuns()">↻ 새로고침</button>
+      </div>
+      <div id="run-list"><div class="empty">로딩 중...</div></div>
+    </div>
+
+    <!-- 전체 프로세스 작업 버튼. -->
+    <div id="sidebar-footer">
+      <button id="close-all-btn" class="sidebar-action-btn neutral"
+              onclick="closeAllPlotWindows()" disabled
+              title="Close every open plot window (does not affect run history)">
+        ✕ Close All Canvases
+      </button>
+      <button id="kill-all-btn" class="sidebar-action-btn danger"
+              onclick="showKillAllModal()"
+              title="SIGTERM every running ./monit process on this machine">
+        ☠ Kill All ./monit
+      </button>
+    </div>
+  </div>
+
+  <div id="gutter" title="드래그하여 패널 너비 조절"></div>
+
+  <div id="main">
+    <header>
+      <span id="title">캔버스를 선택하세요</span>
+      <span class="window-count" id="window-count" style="display:none;">Windows: 0</span>
+    </header>
+    <div id="draw-area">
+      <div id="draw-welcome">Run을 펼치고 캔버스를 클릭하세요<br/>여러 캔버스를 동시에 열 수 있습니다 (드래그/리사이즈 가능)</div>
+    </div>
+  </div>
+  </div><!-- /top-region -->
+
+  <div id="bottombar">
     <div class="cmd-section" id="cmd-section">
       <h2 onclick="toggleCmdSection()">Monit Command Builder</h2>
       <div class="cmd-body">
@@ -300,7 +355,7 @@
           <label>Module</label>
           <input id="inp-module" type="text" placeholder="" />
         </div>
-        <div id="module-hint" style="display:none;font-size:10px;color:#7a7f99;margin:2px 0 4px 58px;line-height:1.4;"></div>
+        <div id="module-hint" style="display:none;font-size:10px;color:#5f6368;margin:2px 0 4px 58px;line-height:1.4;"></div>
         <div class="cmd-row">
           <label>MaxEvt</label>
           <input id="inp-maxevent" type="number" placeholder="(all)" />
@@ -315,13 +370,7 @@
         </div>
         <div class="cmd-flags">
           <label><input type="checkbox" id="flag-AUX" /> AUX</label>
-          <!--
-            AUX scope dropdown — only visible when --AUX is checked. Lets
-            the operator restrict AUX plots to one subsystem when the
-            other is physically absent (e.g. WC-only when hodoscope is
-            removed, so monit doesn't try to open MID 17 files).
-            Default 'WCHodo' matches the legacy 'plot both' behavior.
-          -->
+          <!-- AUX 사용 시 플롯 대상을 선택한다. -->
           <select id="opt-AUXMode" style="display:none;margin-left:6px;">
             <option value="WCHodo" selected>WC + Hodo</option>
             <option value="WC">WC only</option>
@@ -341,48 +390,14 @@
     <div id="live-log-wrap">
       <div id="live-log-header">
         <span><span class="live-dot"></span>monit stdout</span>
-        <button onclick="clearLog()" style="background:none;border:1px solid #2c2f3e;border-radius:3px;color:#7a7f99;font-size:10px;padding:1px 6px;cursor:pointer;">clear</button>
+        <button onclick="clearLog()" style="background:none;border:1px solid #dadce0;border-radius:3px;color:#5f6368;font-size:10px;padding:1px 6px;cursor:pointer;">clear</button>
       </div>
       <div id="live-log"></div>
     </div>
-
-    <div id="run-browser">
-      <div class="browser-header">
-        <h2>Run History</h2>
-        <button onclick="loadRuns()">↻ 새로고침</button>
-      </div>
-      <div id="run-list"><div class="empty">로딩 중...</div></div>
-    </div>
-
-    <!-- Sidebar footer: dangerous ops live here so they're far from EXECUTE -->
-    <div id="sidebar-footer">
-      <button id="close-all-btn" class="sidebar-action-btn neutral"
-              onclick="closeAllPlotWindows()" disabled
-              title="Close every open plot window (does not affect run history)">
-        ✕ Close All Canvases
-      </button>
-      <button id="kill-all-btn" class="sidebar-action-btn danger"
-              onclick="showKillAllModal()"
-              title="SIGTERM every running ./monit process on this machine">
-        ☠ Kill All ./monit
-      </button>
-    </div>
-  </div>
-
-  <div id="gutter" title="드래그하여 패널 너비 조절"></div>
-
-  <div id="main">
-    <header>
-      <span id="title">캔버스를 선택하세요</span>
-      <span class="window-count" id="window-count" style="display:none;">Windows: 0</span>
-    </header>
-    <div id="draw-area">
-      <div id="draw-welcome">왼쪽에서 Run을 펼치고 캔버스를 클릭하세요<br/>여러 캔버스를 동시에 열 수 있습니다 (드래그/리사이즈 가능)</div>
-    </div>
-  </div>
+  </div><!-- /bottombar -->
 </div>
 
-<!-- Confirmation modal: lists every targeted ./monit before we send SIGTERM. -->
+<!-- 종료할 monit 프로세스 확인 창. -->
 <div id="kill-modal" class="modal-backdrop" onclick="onKillBackdropClick(event)">
   <div class="modal-content">
     <h3>⚠️ Kill ALL ./monit processes</h3>
@@ -390,7 +405,7 @@
        including any blocking/LIVE run you may have just started. The web server is
        always excluded.</p>
     <div id="kill-modal-list" class="modal-list">
-      <div style="text-align:center;color:#7a7f99;padding:20px;">Loading processes…</div>
+      <div style="text-align:center;color:#5f6368;padding:20px;">Loading processes…</div>
     </div>
     <div class="modal-error" id="kill-modal-error"></div>
     <div class="modal-buttons">
@@ -406,7 +421,7 @@
 <script>
 const JSROOT = window.JSROOT;
 
-/* ── Command builder ────────────────────────────────────── */
+/* 명령 구성기. */
 function toggleCmdSection() {
   document.getElementById('cmd-section').classList.toggle('collapsed');
 }
@@ -423,12 +438,12 @@ function onTypeChange() {
   const type = document.getElementById('inp-type').value;
   const meta = TYPE_META[type] || TYPE_META.full;
 
-  // Show/hide module row
+  // 유형에 따라 모듈 입력을 표시한다.
   document.getElementById('row-module').style.display = meta.needsModule ? '' : 'none';
   document.getElementById('module-hint').style.display = meta.needsModule ? '' : 'none';
   document.getElementById('module-hint').textContent = meta.hint;
 
-  // Update method options
+  // 유형에 맞는 분석 방법을 표시한다.
   const sel = document.getElementById('inp-method');
   const cur = sel.value;
   sel.innerHTML = meta.methods.map(m =>
@@ -444,22 +459,17 @@ function getParams() {
   const type = document.getElementById('inp-type').value;
   const method = document.getElementById('inp-method').value;
   const moduleRaw = document.getElementById('inp-module').value.trim();
-  // Split space-separated module names → array
+  // 공백으로 구분한 모듈명을 배열로 바꾼다.
   const modules = moduleRaw ? moduleRaw.split(/\s+/) : [];
   const maxEvt = parseInt(document.getElementById('inp-maxevent').value) || null;
   const flags = [];
   ['AUX', 'LIVE'].forEach(f => {
     if (document.getElementById('flag-' + f).checked) flags.push(f);
   });
-  // AUXcut is now a 3-option dropdown: none / WC / WCHodo. Anything other
-  // than 'none' turns on the AUXcut flag; the mode itself is forwarded as
-  // a separate field so the server can pass --AUXCutMode through to monit.
+  // AUX 컷 선택값을 플래그와 모드로 전달한다.
   const auxCutMode = document.getElementById('opt-AUXcut').value;
   if (auxCutMode !== 'none') flags.push('AUXcut');
-  // AUX scope dropdown is only meaningful when --AUX is on. Default is
-  // 'WCHodo' (legacy behavior); when the operator picks WC or Hodo, we
-  // forward --AUXMode <value> so TBaux can skip loading the unused
-  // subsystem's MIDs.
+  // AUX 사용 시 선택한 장비 범위를 전달한다.
   const auxMode = document.getElementById('opt-AUXMode').value;
   return {
     run_number: run, type, method, modules, max_event: maxEvt,
@@ -483,7 +493,7 @@ function updatePreview() {
   document.getElementById('cmd-text').textContent = cmd;
 }
 
-// Run-number stepper: ▲/▼ nudge the Run # by ±1 (never below 0).
+// 실행 번호 버튼은 0 이상에서 1씩 조절한다.
 function stepRun(delta) {
   const inp = document.getElementById('inp-run');
   const next = Math.max(0, (parseInt(inp.value) || 0) + delta);
@@ -491,8 +501,7 @@ function stepRun(delta) {
   updatePreview();
 }
 
-// Show the AUX-scope dropdown only when --AUX is checked, so the side-
-// bar doesn't get cluttered for runs that don't use AUX at all.
+// AUX 사용 시에만 장비 범위 선택을 표시한다.
 (function wireAuxModeVisibility() {
   const cb = document.getElementById('flag-AUX');
   const sel = document.getElementById('opt-AUXMode');
@@ -506,18 +515,17 @@ document.querySelectorAll('#sidebar input, #sidebar select').forEach(el => {
   el.addEventListener('change', updatePreview);
 });
 
-// Drag #gutter to set the sidebar width; #main (flex:1) fills the rest.
-// The chosen width is persisted in localStorage so it survives reloads.
+// 사이드바 너비를 조절하고 localStorage에 저장한다.
 (function wireSidebarResize() {
   const sidebar = document.getElementById('sidebar');
   const gutter = document.getElementById('gutter');
   if (!sidebar || !gutter) return;
 
-  const MIN = 200;                         // matches #sidebar min-width
-  const maxWidth = () => Math.round(window.innerWidth * 0.7);  // ~max-width:70vw
+  const MIN = 200;                         // 사이드바 최소 너비.
+  const maxWidth = () => Math.round(window.innerWidth * 0.7);  // 화면의 70%까지 허용한다.
   const clamp = (w) => Math.max(MIN, Math.min(maxWidth(), w));
 
-  // Restore a previously dragged width.
+  // 저장한 사이드바 너비를 복원한다.
   const saved = parseInt(localStorage.getItem('dqm_sidebar_w') || '', 10);
   if (!Number.isNaN(saved)) sidebar.style.width = clamp(saved) + 'px';
 
@@ -525,8 +533,7 @@ document.querySelectorAll('#sidebar input, #sidebar select').forEach(el => {
 
   const onMove = (e) => {
     if (!dragging) return;
-    // clientX is measured from the viewport's left edge, which is also the
-    // sidebar's left edge, so it equals the desired sidebar width.
+    // 포인터 X 좌표를 사이드바 너비로 사용한다.
     sidebar.style.width = clamp(e.clientX) + 'px';
     e.preventDefault();
   };
@@ -549,29 +556,26 @@ document.querySelectorAll('#sidebar input, #sidebar select').forEach(el => {
     e.preventDefault();
   });
 
-  // Double-click the handle to reset to the default width.
+  // 두 번 클릭하면 기본 너비로 되돌린다.
   gutter.addEventListener('dblclick', () => {
     sidebar.style.width = '340px';
     localStorage.setItem('dqm_sidebar_w', '340');
   });
 
-  // Keep the width within bounds if the window is resized smaller.
+  // 창 크기가 바뀌면 허용 범위로 맞춘다.
   window.addEventListener('resize', () => {
     const w = parseInt(sidebar.style.width, 10);
     if (!Number.isNaN(w)) sidebar.style.width = clamp(w) + 'px';
   });
 })();
 
-onTypeChange(); // init
+onTypeChange(); // 초기 옵션을 구성한다.
 
 let _liveRunNumber = null;
 let _livePollTimer = null;
-let _logSource = null;   // EventSource for the live-log SSE stream
+let _logSource = null;   // 실시간 로그용 EventSource.
 let _logOffset = 0;
-// Tracks whether a monit run is currently in flight, and which kind:
-//   null       → idle
-//   'live'     → --LIVE run, STOP routes to /api/dqm/kill-live (sentinel)
-//   'blocking' → non-LIVE run, STOP routes to /api/dqm/kill-blocking (SIGINT)
+// 현재 monit 실행 유형을 추적한다.
 let _runMode = null;
 
 function setLiveMode(active) {
@@ -585,10 +589,7 @@ function setLiveMode(active) {
   logWrap.classList.toggle('visible', active);
 }
 
-// Lighter-weight counterpart to setLiveMode for the non-LIVE branch.
-// We deliberately do NOT toggle the log pane: the caller already shows
-// it on EXECUTE and we want the final progress lines to remain visible
-// after the run ends.
+// 일반 실행의 버튼과 상태만 갱신한다.
 function setBlockingMode(active) {
   const killBtn = document.getElementById('kill-live-btn');
   const execBtn = document.getElementById('exec-btn');
@@ -603,11 +604,10 @@ function clearLog() {
   _logOffset = 0;
 }
 
-// Progress lines look like "2410 / 3003 events  0:03 left ..."
+// 이벤트 진행 줄을 식별하는 패턴.
 const _PROGRESS_RE = /^\s*\d+ \/ \d+ events/;
 
-// Colorize file-ready status cells: O -> green, X -> red. HTML-escapes first
-// so log text can never inject markup.
+// 로그를 이스케이프하고 준비 상태 셀에 색을 입힌다.
 function _statusColorize(line) {
   const esc = line
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -625,12 +625,11 @@ function _appendLog(lines) {
     const isProgress = _PROGRESS_RE.test(line);
     const last = el.lastElementChild;
     if (isProgress && last && last.dataset.prog === '1') {
-      // overwrite the previous progress line in-place
+      // 이전 진행 줄을 제자리에서 갱신한다.
       last.textContent = line;
     } else {
       const div = document.createElement('div');
-      // Colorize O/X status cells on table rows (they contain '|'); progress
-      // lines keep their plain-text (yellow) rendering.
+      // 표 형식의 O/X 준비 상태에 색을 입힌다.
       if (!isProgress && line.indexOf('|') !== -1) {
         div.innerHTML = _statusColorize(line);
       } else {
@@ -647,11 +646,7 @@ function _appendLog(lines) {
 function startLogPoll() {
   _logOffset = 0;
   document.getElementById('live-log').textContent = '';
-  // Live stdout via Server-Sent Events: the browser opens one long-lived
-  // EventSource instead of polling every 800 ms. The server pushes an SSE
-  // frame the instant new lines appear, with the same {lines,total} payload
-  // as the old /api/dqm/live-log poll — so _appendLog / _logOffset
-  // bookkeeping is unchanged and the log tracks monit in real time.
+  // SSE 연결로 monit 출력을 실시간 수신한다.
   if (_logSource) { _logSource.close(); _logSource = null; }
   const src = new EventSource(`/api/dqm/live-log/stream?since=${_logOffset}`);
   _logSource = src;
@@ -664,13 +659,12 @@ function startLogPoll() {
       }
     } catch (_) {}
   };
-  // EventSource auto-reconnects on transient network errors; nothing to do
-  // here. The stream is torn down deliberately in stopLogPoll().
+  // 일시적 오류는 EventSource의 자동 재연결에 맡긴다.
 }
 
 function stopLogPoll() {
   if (_logSource) { _logSource.close(); _logSource = null; }
-  // Flush remaining lines once
+  // 남은 로그를 한 번 더 가져온다.
   fetch(`/api/dqm/live-log?since=${_logOffset}`).then(r => r.json()).then(d => {
     if (d.lines.length) { _appendLog(d.lines); _logOffset = d.total; }
   }).catch(() => {});
@@ -687,7 +681,7 @@ function startLivePoll() {
         _runMode = null;
         setLiveMode(false);
         document.getElementById('exec-status').textContent = '⏹ LIVE 종료됨';
-        document.getElementById('exec-status').style.color = '#7a7f99';
+        document.getElementById('exec-status').style.color = '#5f6368';
         loadRuns();
       } else {
         loadRuns();
@@ -711,7 +705,7 @@ async function killLive() {
   try {
     await fetch('/api/dqm/kill-live', { method: 'POST' });
     status.textContent = '⏹ LIVE 종료 완료';
-    status.style.color = '#7a7f99';
+    status.style.color = '#5f6368';
   } catch (e) {
     status.textContent = '❌ ' + e.message;
     status.style.color = '#f44336';
@@ -723,14 +717,7 @@ async function killLive() {
   }
 }
 
-// Abort the currently running non-LIVE monit (SIGINT to its process group,
-// like Ctrl+C in a shell). The /api/dqm/run-monit POST that's still
-// awaiting the subprocess will return shortly with a non-zero exit code,
-// at which point executeMonit's normal completion handler re-enables the
-// EXECUTE button. We do NOT call stopLogPoll / setBlockingMode here:
-// the in-flight executeMonit handler does that for us when the response
-// comes back, which keeps the cleanup ordering consistent with a natural
-// (non-aborted) exit.
+// 일반 monit 프로세스 그룹에 SIGINT를 보내 중지한다.
 async function killBlocking() {
   const killBtn = document.getElementById('kill-live-btn');
   const status = document.getElementById('exec-status');
@@ -739,35 +726,27 @@ async function killBlocking() {
   try {
     await fetch('/api/dqm/kill-blocking', { method: 'POST' });
     status.textContent = '⏹ 사용자 중단 (SIGINT 전송됨, 프로세스 종료 대기 중...)';
-    status.style.color = '#7a7f99';
+    status.style.color = '#5f6368';
   } catch (e) {
     status.textContent = '❌ ' + e.message;
     status.style.color = '#f44336';
   }
 }
 
-// Single click handler for the STOP / STOP LIVE button. Routes to the
-// right kill endpoint depending on which mode of run is active.
+// 실행 유형에 맞는 중지 API를 호출한다.
 function stopMonit() {
   if (_runMode === 'live')     return killLive();
   if (_runMode === 'blocking') return killBlocking();
 }
 
-/* ── Password gate for ./monit actions ──────────────────────
-   The EXECUTE and Kill-All buttons require a password (verified
-   server-side against config_general.yml:dqm_action_password).
-   Once verified it's cached in sessionStorage for the tab session,
-   so the operator is only prompted once. The cached value is also
-   sent as the X-DQM-Password header on the actual action calls,
-   which the server re-checks. */
+/* monit 작업 비밀번호를 탭 세션에 보관하고 서버에서 재검증한다. */
 const _MONIT_PW_KEY = 'dqmMonitPassword';
 
 function getMonitPassword() {
   return sessionStorage.getItem(_MONIT_PW_KEY) || '';
 }
 
-// Returns the verified password (string) or null if the user cancelled
-// / entered a wrong one. Prompts only when nothing is cached yet.
+// 검증된 비밀번호를 반환하며 취소나 실패 시 null을 반환한다.
 async function ensureMonitAuth() {
   const cached = getMonitPassword();
   if (cached) return cached;
@@ -777,7 +756,7 @@ async function ensureMonitAuth() {
     './monit 실행 및 프로세스 종료는 보호된 작업입니다.\n' +
     '실행하려면 비밀번호를 입력하세요:'
   );
-  if (pw === null) return null;          // cancelled
+  if (pw === null) return null;          // 사용자가 취소했다.
   try {
     const r = await fetch('/api/dqm/verify-password', {
       method: 'POST',
@@ -789,7 +768,7 @@ async function ensureMonitAuth() {
       sessionStorage.setItem(_MONIT_PW_KEY, pw);
       return pw;
     }
-  } catch (e) { /* fall through to failure */ }
+  } catch (e) { /* 검증 실패로 처리한다. */ }
   alert('비밀번호가 올바르지 않습니다.');
   return null;
 }
@@ -812,17 +791,11 @@ async function executeMonit() {
 
   const isLive = p.flags.includes('LIVE');
 
-  // Show the progress pane and stream stdout/stderr for every run, not
-  // just LIVE. The server pushes lines into the same live-log deque
-  // whether or not --LIVE was passed.
+  // 모든 실행의 표준 출력을 진행 창에 표시한다.
   logWrap.classList.add('visible');
   startLogPoll();
 
-  // For non-LIVE: show the STOP button immediately so the user can abort
-  // a wrongly-configured run while monit is still working. (For LIVE we
-  // do this after the fetch succeeds, since LIVE returns ~instantly with
-  // a PID and we want to keep setLiveMode as the single source of truth
-  // for the LIVE-mode UI state.)
+  // 일반 실행은 시작 즉시 중지 버튼을 표시한다.
   if (!isLive) {
     _runMode = 'blocking';
     setBlockingMode(true);
@@ -847,21 +820,21 @@ async function executeMonit() {
       _liveRunNumber = data.run_number;
       _runMode = 'live';
       status.textContent = `⚡ LIVE 실행 중 (Run ${data.run_number}, PID ${data.pid})`;
-      status.style.color = '#ffb74d';
+      status.style.color = '#b06000';
       setLiveMode(true);
       startLivePoll();
-      // startLogPoll() was already called above.
+      // 위에서 시작한 로그 연결을 유지한다.
     } else {
       stopLogPoll();
       _runMode = null;
       setBlockingMode(false);
       const exit = data.exit_code;
       if (exit === 0) {
-        status.textContent = `✅ 완료 (exit ${exit}) · ${data.canvases.length}개 캔버스`;
-        status.style.color = '#8bc34a';
+        status.textContent = `✅ 완료 (exit ${exit}) · ${(data.files || []).length}개 파일`;
+        status.style.color = '#188038';
       } else {
         status.textContent = `⚠ 종료 (exit ${exit}) · 로그 확인`;
-        status.style.color = '#ffb74d';
+        status.style.color = '#b06000';
       }
       loadRuns();
     }
@@ -878,12 +851,7 @@ async function executeMonit() {
   }
 }
 
-/* ── Floating plot windows ──────────────────────────────────
-   Each canvas click spawns a new draggable/resizable window inside
-   #draw-area. Windows are tracked in _windows so closeAllPlotWindows
-   can wipe them all at once. JSROOT cleanup is run per-window before
-   re-draws to avoid leaking ROOT objects between resizes/reloads.
-*/
+/* 이동과 크기 조절이 가능한 플롯 창. */
 const _windows = new Map();
 let _windowCounter = 0;
 let _activeWindowId = null;
@@ -917,8 +885,7 @@ function makeWindowActive(id) {
 function closePlotWindow(id) {
   const data = _windows.get(id);
   if (!data) return;
-  // Tear down JSROOT painters before yanking the DOM so canvases / web-gl
-  // contexts don't linger.
+  // DOM 제거 전에 JSROOT painter를 정리한다.
   const body = data.element.querySelector('.plot-window-body');
   if (body) {
     try { JSROOT.cleanup(body); } catch (_) {}
@@ -934,7 +901,7 @@ function closePlotWindow(id) {
 
 function closeAllPlotWindows() {
   if (_windows.size === 0) return;
-  // Snapshot first so closePlotWindow can mutate the map safely.
+  // 맵을 안전하게 수정하도록 키 목록을 먼저 복사한다.
   const ids = Array.from(_windows.keys());
   ids.forEach(closePlotWindow);
 }
@@ -995,14 +962,14 @@ function makeWindowResizable(el, id) {
   document.addEventListener('mouseup', () => {
     if (!resizing) return;
     resizing = false;
-    // Defer redraw so JSROOT picks up the new body dimensions.
+    // 새 크기가 반영된 뒤 다시 그린다.
     setTimeout(() => redrawWindow(id), 50);
   });
 
-  // Also auto-redraw on any resize event (covers programmatic resizes).
+  // 모든 크기 변경에서 자동으로 다시 그린다.
   if (window.ResizeObserver) {
     const ro = new ResizeObserver(() => {
-      if (resizing) return; // mouseup handler will trigger it
+      if (resizing) return; // 드래그 종료 시 다시 그린다.
       setTimeout(() => redrawWindow(id), 50);
     });
     ro.observe(el);
@@ -1019,14 +986,54 @@ async function redrawWindow(id) {
   try {
     await JSROOT.cleanup(body);
     await JSROOT.draw(body, data.lastObj, '');
-  } catch (_) { /* swallow; resize-only redraw, not critical */ }
+  } catch (_) { /* 크기 조절용 갱신 실패는 무시한다. */ }
+}
+
+// ROOT 파일명별 JSROOT 핸들을 캐시한다.
+const _rootFiles = new Map();
+async function _openRootFile(filename, bust) {
+  if (!bust && _rootFiles.has(filename)) return _rootFiles.get(filename);
+  const url = `/dqm-output/${filename}` + (bust ? `?t=${Date.now()}` : '');
+  const file = await JSROOT.openFile(url);
+  _rootFiles.set(filename, file);
+  return file;
+}
+
+async function createGifWindow(filename, runNum) {
+  _windowCounter += 1;
+  const id = `plot-window-${_windowCounter}`;
+  const idx = (_windowCounter - 1) % 10;
+  const el = document.createElement('div');
+  el.className = 'plot-window';
+  el.id = id;
+  el.style.left = `${20 + idx * 28}px`;
+  el.style.top  = `${20 + idx * 28}px`;
+  el.style.width  = '680px';
+  el.style.height = '540px';
+  el.innerHTML = `
+    <div class="plot-window-header" title="Drag to move">
+      <div class="plot-window-title">SingleWaveform · Run ${runNum}</div>
+      <button class="plot-window-close" title="Close" onclick="closePlotWindow('${id}')">×</button>
+    </div>
+    <div class="plot-window-body" style="display:flex;align-items:center;justify-content:center;overflow:auto;">
+      <img src="/dqm-output/${filename}?t=${Date.now()}" style="max-width:100%;max-height:100%;" alt="SingleWaveform Run ${runNum}">
+    </div>
+    <div class="plot-window-resize" title="Drag to resize"></div>
+  `;
+  document.getElementById('draw-area').appendChild(el);
+  _windows.set(id, { element: el, filename, canvasName: null, lastObj: null, resizeObserver: null });
+  makeWindowActive(id);
+  makeWindowDraggable(el);
+  makeWindowResizable(el, id);
+  el.addEventListener('mousedown', () => makeWindowActive(id));
+  updateWindowCount();
 }
 
 async function createPlotWindow(filename, canvasName, type, method, auxcut, runNum) {
   _windowCounter += 1;
   const id = `plot-window-${_windowCounter}`;
 
-  // Cascade the position so windows don't pile up exactly on top of each other.
+  // 새 창의 위치를 조금씩 어긋나게 배치한다.
   const cycle = 10;
   const idx = (_windowCounter - 1) % cycle;
   const cycleN = Math.floor((_windowCounter - 1) / cycle);
@@ -1064,15 +1071,12 @@ async function createPlotWindow(filename, canvasName, type, method, auxcut, runN
   el.addEventListener('mousedown', () => makeWindowActive(id));
   updateWindowCount();
 
-  // Fetch JSON + draw. Errors are kept window-local instead of overwriting
-  // the page title (previous behaviour) so other windows aren't disturbed.
+  // ROOT 번들에서 선택한 캔버스를 읽어 현재 창에 그린다.
   const body = el.querySelector('.plot-window-body');
   try {
-    const r = await fetch(`/dqm-output/${filename}?t=${Date.now()}`);
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    const text = await r.text();
-    const obj = JSROOT.parse(text);
-    if (!obj) throw new Error('Failed to parse ROOT JSON');
+    const file = await _openRootFile(filename);
+    const obj = await file.readObject(canvasName);
+    if (!obj) throw new Error(`canvas '${canvasName}' not found in ${filename}`);
     body.innerHTML = '';
     _windows.get(id).lastObj = obj;
     await JSROOT.draw(body, obj, '');
@@ -1089,7 +1093,7 @@ async function showKillAllModal() {
   const confirm = document.getElementById('kill-modal-confirm');
   err.textContent = '';
   modal.classList.add('visible');
-  list.innerHTML = '<div style="text-align:center;color:#7a7f99;padding:20px;">Loading processes…</div>';
+  list.innerHTML = '<div style="text-align:center;color:#5f6368;padding:20px;">Loading processes…</div>';
   confirm.disabled = true;
   confirm.textContent = 'Kill All';
 
@@ -1098,17 +1102,17 @@ async function showKillAllModal() {
     const d = await r.json();
     if (!d.ok) throw new Error(d.error || 'enumeration failed');
     if (d.count === 0) {
-      list.innerHTML = '<div style="text-align:center;color:#7a7f99;padding:20px;">No ./monit processes running.</div>';
+      list.innerHTML = '<div style="text-align:center;color:#5f6368;padding:20px;">No ./monit processes running.</div>';
       confirm.disabled = true;
     } else {
       const rows = d.processes.map(p => `
         <div class="proc-row">
           <span class="pid">PID ${p.pid}</span>
-          <span style="color:#7a7f99;font-size:10px;margin-left:8px;">${p.username}</span>
+          <span style="color:#5f6368;font-size:10px;margin-left:8px;">${p.username}</span>
           <div class="cmd">${escapeHtml(p.cmdline)}</div>
         </div>
       `).join('');
-      list.innerHTML = `<div style="margin-bottom:6px;color:#ffb74d;">Found ${d.count} process(es):</div>${rows}`;
+      list.innerHTML = `<div style="margin-bottom:6px;color:#b06000;">Found ${d.count} process(es):</div>${rows}`;
       confirm.disabled = false;
     }
   } catch (e) {
@@ -1144,10 +1148,9 @@ async function confirmKillAllMonit() {
     const status = document.getElementById('exec-status');
     if (status) {
       status.textContent = `☠ ${d.message}`;
-      status.style.color = d.failed_count > 0 ? '#ffb74d' : '#8bc34a';
+      status.style.color = d.failed_count > 0 ? '#b06000' : '#188038';
     }
-    // If the kill nuked a freeform LIVE/blocking run, the polls notice on
-    // their own tick — but pre-clear the local state so the UI snaps back.
+    // 전체 종료 후 로컬 실행 상태도 초기화한다.
     _runMode = null;
     setLiveMode(false);
     setBlockingMode(false);
@@ -1166,19 +1169,13 @@ function escapeHtml(s) {
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
-/* ── Run browser ────────────────────────────────────────── */
-// Run-groups whose dropdown the user has currently opened.
-// We persist this in a module-scope Set (NOT in the DOM) so that
-// loadRuns() — which fully rebuilds #run-list every poll while LIVE
-// is on — can restore the "open" state of each group after the
-// rebuild. Without this, every 3-second live poll collapses any
-// dropdown the user was inspecting.
+/* 실행 결과 탐색기. */
+// 새로고침 후에도 열린 실행 그룹을 유지한다.
 const _openRuns = new Set();
 
 async function loadRuns() {
   const list = document.getElementById('run-list');
-  // Remember scroll offset so the periodic LIVE refresh doesn't keep
-  // jumping the user back to the top of the list.
+  // 실시간 갱신 전 스크롤 위치를 보관한다.
   const prevScroll = list.scrollTop;
   try {
     const res = await fetch('/api/dqm/runs');
@@ -1191,8 +1188,7 @@ async function loadRuns() {
     runs.forEach(run => {
       const group = document.createElement('div');
       group.className = 'run-group';
-      // Tag the DOM element with the run number so the LIVE refresh can
-      // find this group again next time and re-apply the open state.
+      // 실행 번호로 그룹의 열린 상태를 복원한다.
       group.dataset.run = String(run.run_number);
       const isOpen = _openRuns.has(run.run_number);
       if (isOpen) group.classList.add('open');
@@ -1211,8 +1207,7 @@ async function loadRuns() {
         const nowOpen = !group.classList.contains('open');
         group.classList.toggle('open', nowOpen);
         head.querySelector('.arrow').textContent = nowOpen ? '▾' : '▸';
-        // Mirror the toggle into the persistent Set so the next LIVE
-        // refresh keeps the user's choice instead of collapsing it.
+        // 열린 상태를 다음 갱신까지 보관한다.
         if (nowOpen) _openRuns.add(run.run_number);
         else         _openRuns.delete(run.run_number);
       };
@@ -1220,34 +1215,78 @@ async function loadRuns() {
 
       const canvasDiv = document.createElement('div');
       canvasDiv.className = 'run-canvases';
-      run.canvases.forEach(c => {
+      (run.files || []).forEach(f => {
         const item = document.createElement('div');
         item.className = 'canvas-item';
-        let metaText = `${c.type} · ${c.method}`;
-        if (c.auxcut) metaText += ' · AUXcut';
-        item.innerHTML = `${c.canvas}<span class="meta">${metaText}</span>`;
-        // Each click spawns a new floating window so the user can compare
-        // multiple canvases side-by-side. Re-clicking the same item is fine
-        // — we treat them as independent panes (close manually via the X
-        // button, or sweep them all with the sidebar's "Close All Canvases").
-        item.onclick = (e) => {
+
+        if (f.kind === 'gif') {
+          item.innerHTML = `SingleWaveform<span class="meta">gif</span>`;
+          item.onclick = (e) => {
+            e.stopPropagation();
+            createGifWindow(f.filename, run.run_number);
+          };
+          canvasDiv.appendChild(item);
+          return;
+        }
+
+        // ROOT 번들의 캔버스 목록을 펼쳐 플로팅 창으로 연다.
+        const fileLabel = f.type + (f.module ? ` · ${f.module}` : '');
+        let metaText = f.method || '';
+        if (f.auxcut) metaText += (metaText ? ' · ' : '') + 'AUXcut';
+        item.innerHTML = `<span class="arrow" style="font-size:9px;">▸</span> ${fileLabel}<span class="meta">${metaText}</span>`;
+
+        const sub = document.createElement('div');
+        sub.className = 'canvas-sublist';
+        sub.style.display = 'none';
+        let loaded = false;
+
+        item.onclick = async (e) => {
           e.stopPropagation();
-          createPlotWindow(c.filename, c.canvas, c.type, c.method, c.auxcut, run.run_number);
+          const show = sub.style.display === 'none';
+          sub.style.display = show ? '' : 'none';
+          const arrow = item.querySelector('.arrow');
+          if (arrow) arrow.textContent = show ? '▾' : '▸';
+          if (!show || loaded) return;
+          loaded = true;
+          sub.innerHTML = '<div class="meta" style="padding:4px 8px 4px 22px;">캔버스 로드 중…</div>';
+          try {
+            const file = await _openRootFile(f.filename, true);
+            sub.innerHTML = '';
+            (file.fKeys || []).forEach(key => {
+              const cls = key.fClassName || '';
+              if (cls === 'TList' || cls.indexOf('StreamerInfo') >= 0) return;
+              const citem = document.createElement('div');
+              citem.className = 'canvas-item';
+              citem.style.paddingLeft = '22px';
+              citem.innerHTML = `${key.fName}<span class="meta">${cls}</span>`;
+              citem.onclick = (ev) => {
+                ev.stopPropagation();
+                createPlotWindow(f.filename, key.fName, f.type, f.method, f.auxcut, run.run_number);
+              };
+              sub.appendChild(citem);
+            });
+            if (!sub.children.length)
+              sub.innerHTML = '<div class="meta" style="padding:4px 8px 4px 22px;">캔버스 없음</div>';
+          } catch (err) {
+            loaded = false;
+            sub.innerHTML = `<div class="meta" style="padding:4px 8px 4px 22px;">로드 실패: ${err.message}</div>`;
+          }
         };
+
         canvasDiv.appendChild(item);
+        canvasDiv.appendChild(sub);
       });
       group.appendChild(canvasDiv);
       list.appendChild(group);
     });
-    // Restore scroll after the rebuild. Clamp to current scrollHeight
-    // so we don't try to scroll past the (possibly shrunk) list.
+    // 재구성 후 유효 범위 안에서 스크롤을 복원한다.
     list.scrollTop = Math.min(prevScroll, list.scrollHeight);
   } catch (e) {
     list.innerHTML = `<div class="empty">로드 실패: ${e.message}</div>`;
   }
 }
 
-/* ── Init ───────────────────────────────────────────────── */
+/* 초기화. */
 const _params = new URLSearchParams(location.search);
 const urlRun = _params.get('run');
 if (urlRun) {
@@ -1259,7 +1298,7 @@ if (urlRun) {
 
 loadRuns();
 
-// Restore live state if a live process survived a page reload
+// 페이지를 새로 열어도 실행 중인 실시간 상태를 복원한다.
 (async () => {
   try {
     const r = await fetch('/api/dqm/live-status');
@@ -1269,7 +1308,7 @@ loadRuns();
       _runMode = 'live';
       const status = document.getElementById('exec-status');
       status.textContent = `⚡ LIVE 실행 중 (Run ${d.run_number})`;
-      status.style.color = '#ffb74d';
+      status.style.color = '#b06000';
       setLiveMode(true);
       startLivePoll();
       startLogPoll();

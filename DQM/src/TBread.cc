@@ -186,7 +186,6 @@ void FileController<T>::CheckOverflow()
 
   if (fCurrentEventNum == fCurrentMaxEventNum)
   {
-    // std::cout << "end of the file!" << std::endl;
     fclose(fRawData);
     OpenFile();
   }
@@ -211,6 +210,7 @@ TBmidbase FileController<T>::readMetadata()
   long long coarse_time;
   int itmp;
   long long ltmp;
+  std::vector<int> drsStop;
 
   // read header
   fread(data, 1, 64, fRawData);
@@ -319,9 +319,18 @@ TBmidbase FileController<T>::readMetadata()
   coarse_time = coarse_time * 1000; // get ns
   local_trig_time = fine_time + coarse_time;
 
+  for (int k = 0; k < 4; k++) {
+
+    int drs_stop_tmp = data[34 + k * 2] & 0xFF;
+    int itmp = data[35 + k * 2] & 0xFF;
+
+    drsStop.push_back(drs_stop_tmp + itmp);
+  }
+
   auto amid = TBmidbase(tcb_trig_number, run_number, mid);
   amid.setTCB(tcb_trig_type, tcb_trig_number, tcb_trig_time);
   amid.setLocal(local_trig_number, local_trigger_pattern, local_trig_time);
+  amid.setDrsStop(drsStop);
 
   return std::move(amid);
 }
@@ -457,7 +466,7 @@ void TBread<T>::init_live()
 }
 
 template <typename T>
-bool TBread<T>::CheckNextFileExistence()
+void TBread<T>::CheckNextFileExistence()
 {
 
   std::cout << "                                       |";
@@ -473,10 +482,6 @@ bool TBread<T>::CheckNextFileExistence()
   }
   std::cout << "-" << std::endl;
 
-  // Sentinel path is relative to monit's cwd (Python invokes with cwd=DQM dir,
-  // so JSON output and sentinel both live under ./output/).
-  std::string sentinelPath = "./output/Run" + std::to_string(fRunNum) + "_END";
-
   while(1) {
 
     std::time_t tNowClock = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
@@ -486,20 +491,13 @@ bool TBread<T>::CheckNextFileExistence()
 
     std::cout << "Waiting for file : " << ANSI.YELLOW + ANSI.BOLD + tNow + ANSI.END + " ";
 
-    bool sentinel = (access(sentinelPath.c_str(), F_OK) == 0);
-
     bool ready = true;
-    bool anyHasNext = false;
     for (int i = 0; i < fMIDMap.size(); i++) {
       bool hasNext = fFileMap.at(fMIDMap.at(i))->CheckSingleNextFileExistence();
       bool hasNextNext = fFileMap.at(fMIDMap.at(i))->CheckSingleNextNextFileExistence();
 
-      // When the sentinel is present, accept "next exists" without requiring
-      // next-next — DAQ has stopped so no further files will appear and the
-      // current next file is already complete.
-      bool isReady = sentinel ? hasNext : (hasNext && hasNextNext);
+      bool isReady = hasNext && hasNextNext;
       ready = ready && isReady;
-      if (hasNext) anyHasNext = true;
 
       if(isReady) std::cout << "|   " + ANSI.GREEN + ANSI.BOLD + "O   " + ANSI.END;
       else        std::cout << "|   " + ANSI.RED + ANSI.BOLD + "X   " + ANSI.END;
@@ -510,13 +508,9 @@ bool TBread<T>::CheckNextFileExistence()
       for (int i = 0; i < fMIDMap.size(); i++)
         fFileMap.at(fMIDMap.at(i))->LiveReadyForNextFile();
 
-      std::cout << ANSI.BOLD + ANSI.UNDERLINE_THICK + "Files are ready, updating plots." + ANSI.END << std::endl;
-      return true;
-    }
 
-    if (sentinel && !anyHasNext) {
-      std::cout << ANSI.BOLD + ANSI.YELLOW + "DAQ end sentinel observed, no more data — exiting LIVE." + ANSI.END << std::endl;
-      return false;
+      std::cout << ANSI.BOLD + ANSI.UNDERLINE_THICK + "Files are ready, updating plots." + ANSI.END << std::endl;
+      break;
     }
 
     gSystem->Sleep(5000);

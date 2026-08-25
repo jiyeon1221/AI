@@ -8,10 +8,10 @@ Web sim 모드에서 하드웨어/원격 연결 없이 tool calling 흐름을 �
 from __future__ import annotations
 
 import json
-import math
-import random
 import threading
 from typing import Any, Callable, Dict, Optional
+
+from sim import adc_sim_model as adc_model
 
 
 class ToolSimulator:
@@ -21,7 +21,7 @@ class ToolSimulator:
         self._lock = threading.Lock()
         self._run_counter = 99_000
         self._motor_x = 0.0
-        # 채널명(예: T5C/T5S) → V0Set. 미설정 채널은 hv_status에서 775.0 기본값.
+        # 채널별 설정 전압. 미설정 채널은 775V를 사용한다.
         self._hv: Dict[str, float] = {}
         self._hodoscope_hv = 1200.0
         self._adc_params: Dict[str, Dict[str, float]] = {}
@@ -31,28 +31,13 @@ class ToolSimulator:
             self._run_counter += 1
             return self._run_counter
 
-    def _ensure_adc_params(self, tower: str, target_adc: float = 1230.0):
-        if tower in self._adc_params:
-            return
-        B_c = random.uniform(0.0060, 0.0080)
-        B_s = random.uniform(0.0060, 0.0080)
-        ref_hv_c = random.uniform(750.0, 800.0)
-        ref_hv_s = random.uniform(750.0, 800.0)
-        frac_c = random.uniform(0.35, 0.70)
-        frac_s = random.uniform(0.35, 0.70)
-        A_c = frac_c * target_adc / math.exp(B_c * ref_hv_c)
-        A_s = frac_s * target_adc / math.exp(B_s * ref_hv_s)
-        self._adc_params[tower] = {
-            "C": {"A": A_c, "B": B_c, "noise": random.uniform(0.015, 0.040)},
-            "S": {"A": A_s, "B": B_s, "noise": random.uniform(0.015, 0.040)},
-        }
+    def _ensure_adc_params(self, tower: str, target_adc: float = adc_model.DEFAULT_TARGET_ADC):
+        if tower not in self._adc_params:
+            self._adc_params[tower] = adc_model.make_channel_params(target_adc)
 
     def _simulate_adc(self, tower: str, channel: str, hv: float, iteration: int = 0) -> float:
         self._ensure_adc_params(tower)
-        p = self._adc_params[tower][channel]
-        base = p["A"] * math.exp(p["B"] * hv)
-        effective_noise = p["noise"] / (1.0 + 0.5 * iteration)
-        return max(0.0, base + random.normalvariate(0.0, base * effective_noise))
+        return adc_model.simulate_adc(self._adc_params[tower][channel], hv, iteration)
 
     @staticmethod
     def _emit(lines: list[str], line_callback: Optional[Callable[[str], None]] = None) -> str:
@@ -134,15 +119,14 @@ class ToolSimulator:
     ) -> Dict[str, Any]:
         adc_c = self._simulate_adc(tower, "C", hv_c, iteration)
         adc_s = self._simulate_adc(tower, "S", hv_s, iteration)
-        tol = 0.02
-        c_done = abs(adc_c - target_adc_c) / target_adc_c < tol
-        s_done = abs(adc_s - target_adc_s) / target_adc_s < tol
+        c_done = adc_model.is_converged(adc_c, target_adc_c)
+        s_done = adc_model.is_converged(adc_s, target_adc_s)
 
         self._ensure_adc_params(tower, target_adc_c)
         p_c = self._adc_params[tower]["C"]
         p_s = self._adc_params[tower]["S"]
-        next_hv_c = int(round(hv_c)) if c_done else int(round(math.log(target_adc_c / p_c["A"]) / p_c["B"]))
-        next_hv_s = int(round(hv_s)) if s_done else int(round(math.log(target_adc_s / p_s["A"]) / p_s["B"]))
+        next_hv_c = int(round(hv_c)) if c_done else adc_model.hv_for_target(p_c, target_adc_c)
+        next_hv_s = int(round(hv_s)) if s_done else adc_model.hv_for_target(p_s, target_adc_s)
 
         return {
             "status": "success",

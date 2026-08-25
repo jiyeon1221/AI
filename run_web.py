@@ -12,7 +12,7 @@ import sys
 import argparse
 from pathlib import Path
 
-# Ensure project root is on sys.path
+# 프로젝트 모듈 경로를 추가한다.
 sys.path.insert(0, str(Path(__file__).parent))
 
 import uvicorn

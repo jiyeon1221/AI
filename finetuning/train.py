@@ -1,30 +1,5 @@
 #!/usr/bin/env python3
-"""
-AutoTB 통합 Fine-tuning 스크립트
-────────────────────────────────
-사용법:
-  python finetuning/train.py <agent>  [옵션]
-  python finetuning/train.py all      [옵션]   # 모든 agent 순차 학습
-
-agent 목록:
-  brain | calibration | energy_scan | hv_equalization | position_scan
-
-옵션 (모두 선택 사항):
-  --epochs   INT    학습 epoch 수
-  --lr       FLOAT  learning rate
-  --batch    INT    per_device_train_batch_size
-  --grad_acc INT    gradient_accumulation_steps
-  --lora_r   INT    LoRA rank
-  --alpha    INT    LoRA alpha
-  --data     PATH   데이터 파일 경로 (기본값: finetuning/data/<agent_data>.json)
-  --out      PATH   모델 출력 디렉터리
-
-예시:
-  python finetuning/train.py brain
-  python finetuning/train.py brain --epochs 5 --lr 5e-5
-  python finetuning/train.py calibration --epochs 10
-  python finetuning/train.py all
-"""
+"""Agent별 학습 데이터로 AutoTB 모델을 fine-tuning한다."""
 
 import argparse
 import dataclasses
@@ -167,7 +142,10 @@ class WeightedLossTrainer(Trainer):
         else:
             weights = torch.ones_like(per_token)
 
-        loss = (per_token * weights).mean()
+        # padding(labels=-100)을 제외한 실제 가중 토큰 합으로 정규화 → 배치 padding 양에 불변.
+        weights = weights * (shift_labels != -100).to(per_token.dtype)
+        denom   = weights.sum().clamp(min=1.0)
+        loss    = (per_token * weights).sum() / denom
         return (loss, outputs) if return_outputs else loss
 
 
@@ -290,12 +268,14 @@ def preprocess_function(
     return model_inputs
 
 
-def _cache_path(agent_key: str, data_path: str, split: str) -> str:
-    """데이터 파일 내용 기반 캐시 키 생성 (data 변경 시 자동 무효화)."""
+def _cache_path(agent_key: str, data_path: str, split: str,
+                base_model: str, decision_weight: float) -> str:
+    """데이터·tokenizer·가중치 변경 시 자동 무효화되는 캐시 키 생성.
+    토큰은 base_model(tokenizer)에, weight_mask는 decision_weight에 의존한다."""
     data_file = Path(data_path)
     mtime     = int(data_file.stat().st_mtime) if data_file.exists() else 0
     key       = hashlib.md5(
-        f"{agent_key}_{data_path}_{mtime}_{MAX_LENGTH}".encode()
+        f"{agent_key}_{data_path}_{mtime}_{MAX_LENGTH}_{base_model}_{decision_weight}".encode()
     ).hexdigest()[:10]
     cache_dir = FINETUNING_DIR / "data" / ".cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -348,8 +328,8 @@ def finetune(agent_key: str, cfg: dict) -> None:
         remove_columns=dataset["train"].column_names,
         desc="Tokenizing",
         cache_file_names={
-            "train": _cache_path(agent_key, data_path, "train"),
-            "test":  _cache_path(agent_key, data_path, "test"),
+            "train": _cache_path(agent_key, data_path, "train", base_model, cfg["decision_weight"]),
+            "test":  _cache_path(agent_key, data_path, "test", base_model, cfg["decision_weight"]),
         },
     )
     logger.info(f"  Max length cap: {MAX_LENGTH} tokens  (truncation threshold)")

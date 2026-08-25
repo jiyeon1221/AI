@@ -26,13 +26,7 @@ namespace fs = std::filesystem;
 
 int main(int argc, char *argv[]) {
 
-    // setup for prompt analysis
-    // it could be like
-    //   argv[1] = RunNumber  (required)
-    //   argv[2] = MaxEvent   (required; -1 = use all)
-    //   argv[3] = (optional) calibration .txt path. If omitted, the loader
-    //             looks for ./Hodoscope/Normalize_Run_<RunNumber>_intADC.txt
-    //             (the file produced by normalize_hodo.cc).
+    // 인수: 실행 번호, 최대 이벤트 수, 선택적 정규화 파일.
     int fRunNum = std::stoi(argv[1]);
     int fMaxEvent = std::stoi(argv[2]);
     
@@ -43,21 +37,11 @@ int main(int argc, char *argv[]) {
     TButility util = TButility();
     util.LoadMapping("../mapping/mapping_KEK.root");
 
-    // TODO: Update integration range, or use peakADC instead of intADC
-    int first = 135;  // Hodoscope integration range
-    int last  = 270;  // Hodoscope integration range
+    // 호도스코프 적분 구간.
+    int first = 135;
+    int last  = 270;
 
-    // ── Per-channel IntADC normalization constants ──────────────────────────
-    // Produced by normalize_hodo.cc: each line is
-    //   "<channel> <entries> <mean> <rms> <norm_const>"
-    // where norm_const is the mean of that channel's raw IntADC distribution.
-    // Below we divide each event's raw IntADC by this constant, so all 32
-    // channels' calibrated IntADC distributions are centered near 1.0 and the
-    // max-element search picks the geometrically-correct fiber rather than
-    // the highest-gain one. PeakADC is left untouched on purpose.
-    //
-    // Missing calibration file → all constants stay at 1.0 (no-op) and a
-    // warning is printed, so this binary still runs on uncalibrated data.
+    // 채널별 IntADC 정규화 상수를 읽으며 파일이 없으면 1.0을 사용한다.
     std::array<double, 16> normX_intADC; normX_intADC.fill(1.0);
     std::array<double, 16> normY_intADC; normY_intADC.fill(1.0);
     bool calibLoaded = false;
@@ -104,39 +88,6 @@ int main(int argc, char *argv[]) {
     }
     
     // 16x16 fiber CID
-    // TBcid cid_X1  = util.GetCID("X1"); 
-    // TBcid cid_X2  = util.GetCID("X2"); 
-    // TBcid cid_X3  = util.GetCID("X3"); 
-    // TBcid cid_X4  = util.GetCID("X4"); 
-    // TBcid cid_X5  = util.GetCID("X5"); 
-    // TBcid cid_X6  = util.GetCID("X6"); 
-    // TBcid cid_X7  = util.GetCID("X7"); 
-    // TBcid cid_X8  = util.GetCID("X8"); 
-    // TBcid cid_X9  = util.GetCID("X9"); 
-    // TBcid cid_X10 = util.GetCID("X10");
-    // TBcid cid_X11 = util.GetCID("X11");
-    // TBcid cid_X12 = util.GetCID("X12");
-    // TBcid cid_X13 = util.GetCID("X13");
-    // TBcid cid_X14 = util.GetCID("X14");
-    // TBcid cid_X15 = util.GetCID("X15");
-    // TBcid cid_X16 = util.GetCID("X16");
-    
-    // TBcid cid_Y1  = util.GetCID("Y1");
-    // TBcid cid_Y2  = util.GetCID("Y2");
-    // TBcid cid_Y3  = util.GetCID("Y3");
-    // TBcid cid_Y4  = util.GetCID("Y4");
-    // TBcid cid_Y5  = util.GetCID("Y5");
-    // TBcid cid_Y6  = util.GetCID("Y6");
-    // TBcid cid_Y7  = util.GetCID("Y7");
-    // TBcid cid_Y8  = util.GetCID("Y8");
-    // TBcid cid_Y9  = util.GetCID("Y9");
-    // TBcid cid_Y10 = util.GetCID("Y10");
-    // TBcid cid_Y11 = util.GetCID("Y11");
-    // TBcid cid_Y12 = util.GetCID("Y12");
-    // TBcid cid_Y13 = util.GetCID("Y13");
-    // TBcid cid_Y14 = util.GetCID("Y14");
-    // TBcid cid_Y15 = util.GetCID("Y15");
-    // TBcid cid_Y16 = util.GetCID("Y16");
 
     TBcid cid_X1  = util.GetCID("HX1");
     TBcid cid_X2  = util.GetCID("HX2");
@@ -172,18 +123,14 @@ int main(int argc, char *argv[]) {
     TBcid cid_Y15 = util.GetCID("HY15");
     TBcid cid_Y16 = util.GetCID("HY16");
 
-    // prepare the histograms wa want to draw
-    // Title tag the IntADC heatmap with the calibration status so a quick
-    // glance at the canvas tells you whether per-channel normalization is in
-    // effect or not. PeakADC is never calibrated here (see comment above).
+    // 보정 상태가 표시된 IntADC 히스토그램을 준비한다.
     const std::string intADCTitle = std::string("Hodoscope IntADC")
         + (calibLoaded ? " (calibrated)" : " (raw, no calib loaded)")
         + ";X[mm];Y[mm];events";
     TH2F* hist_hodoscope_intADC = new TH2F("hodoscope_intADC" , intADCTitle.c_str(), 16, 0, 16, 16, 0, 16);
     TH2F* hist_hodoscope_peakADC = new TH2F("hodoscope_peakADC" , "Hodoscope PeakADC;X[mm];Y[mm];events", 16, 0, 16, 16, 0, 16);
 
-    // Preapare data reader
-    // TODO: Update MID to proper DAQ number
+    // MID 17 파형 데이터 리더.
     TBread<TBwaveform> readerWave = TBread<TBwaveform>(fRunNum, fMaxEvent, -1, false, "/u/user/swkim/SE_UserHome/2025_KEK_TB_Data", {17});
     
     // Set Maximum event
@@ -275,11 +222,7 @@ int main(int argc, char *argv[]) {
         intADC_Y[14] = GetInt(wave_Y15, first, last);
         intADC_Y[15] = GetInt(wave_Y16, first, last);
 
-        // ── Per-channel IntADC normalization ─────────────────────────────
-        // Divide raw IntADC by the channel's norm constant. If no calib file
-        // was loaded, the constants are all 1.0 and this is a no-op (so the
-        // arithmetic is correct but the heatmap reflects raw gain spread).
-        // PeakADC stays raw on purpose.
+        // IntADC만 채널별 상수로 정규화한다.
         for (int i = 0; i < 16; ++i) {
             intADC_X[i] /= normX_intADC[i];
             intADC_Y[i] /= normY_intADC[i];
@@ -323,8 +266,6 @@ int main(int argc, char *argv[]) {
         //////////////////////////////////////////////////////////////////////
         // Find max X and Y position of intADC, peakADC
         //////////////////////////////////////////////////////////////////////
-        // float max_X_intADC = *std::max_element(intADC_X.begin(), intADC_X.end());
-        // float max_Y_intADC = *std::max_element(intADC_Y.begin(), intADC_Y.end());
 
         int max_X_idx_intADC = std::max_element(intADC_X.begin(), intADC_X.end()) - intADC_X.begin();
         int max_Y_idx_intADC = std::max_element(intADC_Y.begin(), intADC_Y.end()) - intADC_Y.begin();
@@ -332,8 +273,6 @@ int main(int argc, char *argv[]) {
         float max_X_pos_intADC = max_X_idx_intADC + 0.5;
         float max_Y_pos_intADC = max_Y_idx_intADC + 0.5;
 
-        // float max_X_peakADC = *std::max_element(peakADC_X.begin(), peakADC_X.end());
-        // float max_Y_peakADC = *std::max_element(peakADC_Y.begin(), peakADC_Y.end());
 
         int max_X_idx_peakADC = std::max_element(peakADC_X.begin(), peakADC_X.end()) - peakADC_X.begin();
         int max_Y_idx_peakADC = std::max_element(peakADC_Y.begin(), peakADC_Y.end()) - peakADC_Y.begin();

@@ -1,17 +1,5 @@
 #!/usr/bin/env python3
-"""
-Training data generator for PositionScanAgent
-
-다른 3개 생성기(EM/calib/hv)와 동일한 방식: agent를 구동하지 않고 프롬프트/컨텍스트를
-템플릿으로 직접 재현한다. SYSTEM_PROMPT / _build_state_context / _get_step_hint /
-build_full_context 포맷이 PositionScanAgent(agents/position_scan_agent.py)와 완전히 동일해야 한다.
-
-모델이 출력해야 하는 결정은 4종뿐 (측정/cross/보간/이동/종료는 코드 소유):
-  1a-i.  motor_x_move_tool (자동 X 이동)
-  1a-ii. Y축 수동 이동 메시지
-  1b.    daq_run_tool
-  1c.    plot confirmation message
-"""
+"""PositionScanAgent 워크플로우 형식의 학습 데이터를 생성한다."""
 
 import json
 import random
@@ -20,8 +8,14 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+from agents.base_agent import build_prompt_context
 from config import MSG_PLOT_CONFIRM
 from tools.position_calculator_tool import get_calculator
+from finetuning.data_gen_common import (
+    make_example as _make_example,
+    random_events,
+    write_dataset,
+)
 
 VALID_TOWERS = [f"T{n}" for n in range(1, 10)]
 ENERGIES = [1, 2, 5, 10, 20, 50, 100, 200]
@@ -75,11 +69,6 @@ def _grid_to_tower(col: int, row: int) -> Optional[str]:
     if not (0 <= col <= 2 and 0 <= row <= 2):
         return None
     return f"T{row * 3 + col + 1}"
-
-
-def random_events() -> int:
-    digits = random.randint(3, 6)
-    return random.randint(10 ** (digits - 1), 10 ** digits - 1)
 
 
 def _interior_towers(direction: str) -> List[str]:
@@ -146,36 +135,19 @@ def _get_step_hint(state: Dict) -> str:
             f"REQUIRED NEXT: plot confirmation message (step 1c). DO NOT call daq_run_tool.")
 
 
-def _build_history_context(history: List[Dict]) -> str:
-    if not history:
-        return "(No conversation yet)"
-    return "\n".join(
-        f"{'User' if m['role'] == 'user' else 'Agent'}: {m['content']}" for m in history[-10:]
+def build_full_context(state: Dict, history: List[Dict], current_input: Optional[str] = None) -> str:
+    return build_prompt_context(
+        _build_state_context(state),
+        history,
+        current_input=current_input,
+        step_hint=_get_step_hint(state),
     )
 
 
-def build_full_context(state: Dict, history: List[Dict], current_input: Optional[str] = None) -> str:
-    if current_input is None and history and history[-1]["role"] == "user":
-        current_input = history[-1]["content"]
-        temp_history = history[:-1]
-    else:
-        temp_history = history
-
-    parts = ["=== Current State ===", _build_state_context(state), ""]
-    parts += ["=== Recent Conversation ===", _build_history_context(temp_history), ""]
-    if current_input:
-        parts += ["=== Current User Input ===", current_input, ""]
-    parts += ["=== Your Task ===", _get_step_hint(state), "", "Output JSON with tool name and parameters."]
-    return "\n".join(parts)
-
-
 def make_example(state, history, decision) -> Dict[str, Any]:
-    ctx = build_full_context(state, history)
-    return {"messages": [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": ctx},
-        {"role": "assistant", "content": json.dumps(decision, ensure_ascii=False)},
-    ]}
+    return _make_example(
+        SYSTEM_PROMPT, build_full_context(state, history), decision
+    )
 
 
 def generate_workflow(center: str, direction: str, channel: str,
@@ -246,8 +218,6 @@ def generate_workflow(center: str, direction: str, channel: str,
 
 
 def main():
-    output_file = Path(__file__).parent / "data" / "position_scan_data.json"
-    output_file.parent.mkdir(parents=True, exist_ok=True)
     all_ex = []
 
     for direction in ("horizontal", "vertical"):
@@ -262,12 +232,7 @@ def main():
             interval = round(random.uniform(2.0, 8.0), 2)
             all_ex.extend(generate_workflow(center, direction, channel, energy, events, est, interval))
 
-    with open(output_file, "w", encoding="utf-8") as f:
-        for ex in all_ex:
-            f.write(json.dumps(ex, ensure_ascii=False) + "\n")
-    lengths = [sum(len(m["content"]) for m in ex["messages"]) for ex in all_ex]
-    print(f"Generated {len(all_ex)} samples → {output_file}")
-    print(f"   char len  max={max(lengths):,}  avg={sum(lengths)/len(lengths):,.0f}")
+    write_dataset("position_scan_data.json", all_ex)
 
 
 if __name__ == "__main__":

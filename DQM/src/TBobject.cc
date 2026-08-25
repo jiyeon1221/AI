@@ -6,7 +6,6 @@ ObjectCollection::ObjectCollection(int argc, char* argv[])
 {
   for (int i = 1; i < fArgc; i++) {
     fArgv.push_back(std::string(argv[i]));
-    // std::cout << "Print " << i - 1 << " " << fArgv.at(i - 1) << std::endl;
   }
 
   init();
@@ -77,12 +76,7 @@ ObjectCollection::ObjectCollection(int argc, char* argv[])
     if (fArgv[i] == "--AUX")
       AddVariable("AUX", true);
 
-    // --AUXMode WC|Hodo|WCHodo: which AUX subsystems to plot. Independent
-    // from --AUXCutMode (which decides what AUXcut filters on). Letting
-    // the operator pick "WC" alone means TBaux skips resolving HX/HY
-    // CIDs entirely, so the reader won't try to open MID 17 when the
-    // hodoscope is physically out of the setup. Default (when --AUX is
-    // set without --AUXMode) is "WCHodo" for backward compatibility.
+    // AUX 플롯 대상을 WC, Hodo 또는 둘 다로 지정한다.
     if (fArgv[i] == "--AUXMode") {
       i++;
       AddVariable("AUXMode", fArgv[i]);

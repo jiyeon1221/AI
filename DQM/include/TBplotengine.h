@@ -69,16 +69,9 @@ public:
   void init();
   void init_full();
   void init_Generic();
-  // Hardcoded MCPPMT (C1..C64 + S1..S64) heatmap initializer. Mirrors
-  // init_Generic() (which serves the 9-tower full mode) but for MCPPMT's
-  // 8x8 channel layout — keep both helpers separate so a future SiPM heatmap
-  // can land alongside without entangling tower logic.
+  // MCPPMT C/S 64채널의 8×8 heatmap을 초기화한다.
   void init_MCPPMT();
-  // Single-canvas grid of per-tower IntADC/PeakADC distributions for --type
-  // module. Tower discovery, grid sizing and pad placement all come from the
-  // loaded mapping (TButility), with an optional --module <prefix> filter so
-  // CERN-style "show one module's 4 towers" still works alongside the KEK
-  // "show all 9 towers of the single module" case.
+  // 매핑과 모듈 접두사로 타워별 분포 격자를 초기화한다.
   void init_module();
   void PrintInfo();
 
@@ -91,16 +84,7 @@ public:
 
   void SaveAs(TString output);
 
-  // Dump every canvas (fCanvas + fCanvasFull[]) as JSROOT-compatible JSON.
-  // Each file is written to outDir/<basePrefix>_<canvasName>.json atomically
-  // (write to .tmp then rename) so the web UI can read mid-run without tearing.
-  void WriteCanvasesAsJSON(const std::string& outDir, const std::string& basePrefix);
-
-  // Pedestal window length used by Get{Int,Peak}ADC. Configurable per
-  // channel name through config_general.yml::PedestalBins (see TBpedConfig
-  // for the YAML schema and lookup order). Default 100 bins if no rule
-  // matches, which preserves legacy behaviour for callers that don't pass
-  // a name.
+  // 채널별 pedestal 구간을 반환하며 기본값은 100 bin이다.
   double GetPeakADC(std::vector<short> waveform, int xInit, int xFin, int pedBins = 100);
   double GetIntADC(std::vector<short> waveform, int xInit, int xFin, int pedBins = 100);
 
@@ -119,9 +103,7 @@ public:
     return -999;
   }
 
-  // Pedestal-bin configuration. Wired from TBmonit using the top-level
-  // config_general.yml::PedestalBins node. Calling with an undefined node
-  // is a no-op (every channel falls back to the 100-bin default).
+  // PedestalBins 설정을 적용한다.
   void SetPedestalBins(const YAML::Node& node) { fPedConfig.Load(node); }
 
   std::vector<int> GetUniqueMID();
@@ -191,16 +173,11 @@ private:
   std::vector<PlotInfo> fPlotter_Ceren;
   std::vector<PlotInfo> fPlotter_Scint;
 
-  // Grid dimensions for --type module (discovered in init_module()). gridX
-  // covers info.row (1..N from left to right), gridY covers info.col (1..N
-  // from bottom to top). Both stay 0 outside module mode so accidental reads
-  // are easy to spot.
+  // module 유형의 로컬 격자 크기.
   int fGridX_module = 0;
   int fGridY_module = 0;
 
-  // Per-channel pedestal bin window, loaded from config_general.yml via
-  // SetPedestalBins(). Empty (= every channel falls back to the 100-bin
-  // default) until SetPedestalBins() is called by TBmonit.
+  // 설정에서 읽은 채널별 pedestal 구간.
   TBpedConfig fPedConfig;
 };
 

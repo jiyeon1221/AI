@@ -58,8 +58,6 @@ int main(int argc, char *argv[]) {
 	float cut_DWC = 1.5;
 
 	// Integral range
-	// int start_bin = fStartBin;
-	// int end_bin = fEndBin;
 	// height for text legend
 	TLatex* text = new TLatex();
 	text->SetTextSize(0.025);  

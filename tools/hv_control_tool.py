@@ -1,27 +1,9 @@
 #!/usr/bin/env python3
-"""
-HV Control Tool — CAEN HV Supply 제어 (SSH 원격)
-
-Available Commands:
-- 'voltage': 전압 설정 (requires: channels, voltage)
-- 'current': 전류 설정 (requires: channels, current)
-- 'on': HV 전원 켜기 (requires: channels)
-- 'off': HV 전원 끄기 (requires: channels)
-- 'status': 상태 확인 (optional: channels, default='all')
-
-Channel Specification:
-- 'all' 또는 '전체': 모든 채널 (전체 슬롯)
-- 'even': 짝수 채널번호 (모든 슬롯)
-- 'odd': 홀수 채널번호 (모든 슬롯)
-- 'slot:12': 슬롯 12의 모든 채널
-- 'slot:12:even' / 'slot:12:odd': 슬롯 + 짝홀 조합
-- ['T1C', 'T2C']: Name으로 지정 → config에서 (slot, ch) 자동 매핑
-- [{'slot': 11, 'ch': 3}]: 명시적 (slot, ch) 지정
-- '11:3': slot 11, ch 3
-"""
+"""SSH를 통해 CAEN HV 채널의 전원, 전압, 전류, 상태를 제어한다."""
 
 import re
 import shlex
+import threading
 from typing import Any, Dict, List, Tuple
 from datetime import datetime
 
@@ -31,7 +13,7 @@ from .base_tool import BaseTool
 from .config_loader import get_hv_config
 
 
-# ===== HV 설정 (Config from YAML) =====
+# YAML 기반 HV 설정.
 _hv_config = get_hv_config()
 _hv_ssh = _hv_config.get('SSH', {})
 _hv_paths = _hv_config.get('Paths', {})
@@ -50,12 +32,15 @@ HV_CONFIG_RELATIVE_PATH = f"../config/{HV_CONFIG_FILENAME}"
 HV_CONFIG_FULL_PATH = _hv_paths.get('ConfigFullPath')
 HV_ENV_PRE_COMMAND = "export LD_LIBRARY_PATH=/usr/lib64/:$LD_LIBRARY_PATH"
 
-# (slot, ch) 타입 별칭
+# 슬롯과 채널 번호 쌍.
 SlotCh = Tuple[int, int]
 
 
 class HVControlTool(BaseTool):
     """HV 제어 Tool — multi-slot 지원"""
+
+    # 모든 인스턴스·경로(웹·시나리오 agent·brain)가 공유하는 config read-modify-write 직렬화 lock.
+    _CONFIG_LOCK = threading.RLock()
 
     def __init__(self):
         super().__init__(
@@ -124,7 +109,7 @@ class HVControlTool(BaseTool):
         finally:
             pass
 
-    # ===== 명령 구현 =====
+    # HV 명령 구현.
 
     def _set_voltage(self, params: Dict[str, Any]) -> str:
         """전압 설정"""
@@ -133,27 +118,26 @@ class HVControlTool(BaseTool):
             if not channel_values:
                 return "❌ channel_values가 비어있습니다"
 
-            rows = self._read_config_rows()
-            row_map, name_map, all_pairs = self._build_lookup(rows)
+            with self._CONFIG_LOCK:
+                rows = self._read_config_rows()
+                row_map, name_map, all_pairs = self._build_lookup(rows)
 
-            resolved: List[SlotCh] = []
-            for identifier, voltage in channel_values.items():
-                pairs = self._resolve_identifier(str(identifier), name_map, all_pairs)
-                if not pairs:
-                    return f"❌ '{identifier}'에 해당하는 채널을 찾을 수 없습니다"
-                for pair in pairs:
-                    row = row_map.get(pair)
-                    if not row:
-                        return f"❌ Slot{pair[0]} Ch{pair[1]}이(가) config.txt에 없습니다"
-                    row['V0Set'] = self._format_numeric(voltage)
-                    resolved.append(pair)
+                resolved: List[SlotCh] = []
+                changes = []
+                for identifier, voltage in channel_values.items():
+                    pairs = self._resolve_identifier(str(identifier), name_map, all_pairs)
+                    if not pairs:
+                        return f"❌ '{identifier}'에 해당하는 채널을 찾을 수 없습니다"
+                    v = self._format_numeric(voltage)
+                    for pair in pairs:
+                        row = row_map.get(pair)
+                        if not row:
+                            return f"❌ Slot{pair[0]} Ch{pair[1]}이(가) config.txt에 없습니다"
+                        row['V0Set'] = v
+                        resolved.append(pair)
+                        changes.append(f"Slot{pair[0]}Ch{pair[1]}→{v}V")
 
-            self._write_config_rows(rows)
-
-            changes = []
-            for identifier, voltage in channel_values.items():
-                for pair in self._resolve_identifier(str(identifier), name_map, all_pairs):
-                    changes.append(f"Slot{pair[0]}Ch{pair[1]}→{self._format_numeric(voltage)}V")
+                self._write_config_rows(rows)
 
             out = ["🔧 HV Voltage Command Executed", f"📋 Request: {', '.join(sorted(changes))}", ""]
             out += self._run_per_slot(sorted(set(resolved)), "--config {cfg} --Pw On".format(cfg=HV_CONFIG_RELATIVE_PATH))
@@ -175,16 +159,17 @@ class HVControlTool(BaseTool):
                 return "❌ 유효한 채널을 찾을 수 없습니다"
 
             voltage = float(params["voltage"])
-            rows = self._read_config_rows()
-            row_map, _, _ = self._build_lookup(rows)
+            with self._CONFIG_LOCK:
+                rows = self._read_config_rows()
+                row_map, _, _ = self._build_lookup(rows)
 
-            for pair in pairs:
-                row = row_map.get(pair)
-                if not row:
-                    return f"❌ Slot{pair[0]} Ch{pair[1]}이(가) config.txt에 없습니다"
-                row['V0Set'] = self._format_numeric(voltage)
+                for pair in pairs:
+                    row = row_map.get(pair)
+                    if not row:
+                        return f"❌ Slot{pair[0]} Ch{pair[1]}이(가) config.txt에 없습니다"
+                    row['V0Set'] = self._format_numeric(voltage)
 
-            self._write_config_rows(rows)
+                self._write_config_rows(rows)
 
             out = ["🔧 HV Voltage Command Executed"]
             out.append(self._fmt_request(pairs) + f" → {self._format_numeric(voltage)}V")
@@ -199,27 +184,26 @@ class HVControlTool(BaseTool):
             if not channel_values:
                 return "❌ channel_values가 비어있습니다"
 
-            rows = self._read_config_rows()
-            row_map, name_map, all_pairs = self._build_lookup(rows)
+            with self._CONFIG_LOCK:
+                rows = self._read_config_rows()
+                row_map, name_map, all_pairs = self._build_lookup(rows)
 
-            resolved: List[SlotCh] = []
-            for identifier, current in channel_values.items():
-                pairs = self._resolve_identifier(str(identifier), name_map, all_pairs)
-                if not pairs:
-                    return f"❌ '{identifier}'에 해당하는 채널을 찾을 수 없습니다"
-                for pair in pairs:
-                    row = row_map.get(pair)
-                    if not row:
-                        return f"❌ Slot{pair[0]} Ch{pair[1]}이(가) config.txt에 없습니다"
-                    row['I0Set'] = self._format_numeric(current)
-                    resolved.append(pair)
+                resolved: List[SlotCh] = []
+                changes = []
+                for identifier, current in channel_values.items():
+                    pairs = self._resolve_identifier(str(identifier), name_map, all_pairs)
+                    if not pairs:
+                        return f"❌ '{identifier}'에 해당하는 채널을 찾을 수 없습니다"
+                    c = self._format_numeric(current)
+                    for pair in pairs:
+                        row = row_map.get(pair)
+                        if not row:
+                            return f"❌ Slot{pair[0]} Ch{pair[1]}이(가) config.txt에 없습니다"
+                        row['I0Set'] = c
+                        resolved.append(pair)
+                        changes.append(f"Slot{pair[0]}Ch{pair[1]}→{c}μA")
 
-            self._write_config_rows(rows)
-
-            changes = []
-            for identifier, current in channel_values.items():
-                for pair in self._resolve_identifier(str(identifier), name_map, all_pairs):
-                    changes.append(f"Slot{pair[0]}Ch{pair[1]}→{self._format_numeric(current)}μA")
+                self._write_config_rows(rows)
 
             out = ["🔧 HV Current Command Executed", f"📋 Request: {', '.join(sorted(changes))}", ""]
             out += self._run_per_slot(sorted(set(resolved)), f"--config {HV_CONFIG_RELATIVE_PATH} --Pw On")
@@ -241,16 +225,17 @@ class HVControlTool(BaseTool):
                 return "❌ 유효한 채널을 찾을 수 없습니다"
 
             current = float(params["current"])
-            rows = self._read_config_rows()
-            row_map, _, _ = self._build_lookup(rows)
+            with self._CONFIG_LOCK:
+                rows = self._read_config_rows()
+                row_map, _, _ = self._build_lookup(rows)
 
-            for pair in pairs:
-                row = row_map.get(pair)
-                if not row:
-                    return f"❌ Slot{pair[0]} Ch{pair[1]}이(가) config.txt에 없습니다"
-                row['I0Set'] = self._format_numeric(current)
+                for pair in pairs:
+                    row = row_map.get(pair)
+                    if not row:
+                        return f"❌ Slot{pair[0]} Ch{pair[1]}이(가) config.txt에 없습니다"
+                    row['I0Set'] = self._format_numeric(current)
 
-            self._write_config_rows(rows)
+                self._write_config_rows(rows)
 
             out = ["🔧 HV Current Command Executed"]
             out.append(self._fmt_request(pairs) + f" → {self._format_numeric(current)}μA")
@@ -275,16 +260,17 @@ class HVControlTool(BaseTool):
             return "❌ 유효한 채널을 찾을 수 없습니다"
 
         svmax = float(params["svmax"])
-        rows = self._read_config_rows()
-        row_map, _, _ = self._build_lookup(rows)
+        with self._CONFIG_LOCK:
+            rows = self._read_config_rows()
+            row_map, _, _ = self._build_lookup(rows)
 
-        for pair in pairs:
-            row = row_map.get(pair)
-            if not row:
-                return f"❌ Slot{pair[0]} Ch{pair[1]}이(가) config.txt에 없습니다"
-            row['SVMax'] = self._format_numeric(svmax)
+            for pair in pairs:
+                row = row_map.get(pair)
+                if not row:
+                    return f"❌ Slot{pair[0]} Ch{pair[1]}이(가) config.txt에 없습니다"
+                row['SVMax'] = self._format_numeric(svmax)
 
-        self._write_config_rows(rows)
+            self._write_config_rows(rows)
 
         out = ["🔧 HV SVMax Command Executed"]
         out.append(self._fmt_request(pairs) + f" SVMax → {self._format_numeric(svmax)}")
@@ -310,19 +296,20 @@ class HVControlTool(BaseTool):
         if not new_name:
             return "❌ name이 비어있습니다"
 
-        rows = self._read_config_rows()
-        row_map, _, _ = self._build_lookup(rows)
+        with self._CONFIG_LOCK:
+            rows = self._read_config_rows()
+            row_map, _, _ = self._build_lookup(rows)
 
-        changes = []
-        for pair in pairs:
-            row = row_map.get(pair)
-            if not row:
-                return f"❌ Slot{pair[0]} Ch{pair[1]}이(가) config.txt에 없습니다"
-            old_name = row['name']
-            row['name'] = new_name
-            changes.append(f"Slot{pair[0]} Ch{pair[1]}: {old_name} → {new_name}")
+            changes = []
+            for pair in pairs:
+                row = row_map.get(pair)
+                if not row:
+                    return f"❌ Slot{pair[0]} Ch{pair[1]}이(가) config.txt에 없습니다"
+                old_name = row['name']
+                row['name'] = new_name
+                changes.append(f"Slot{pair[0]} Ch{pair[1]}: {old_name} → {new_name}")
 
-        self._write_config_rows(rows)
+            self._write_config_rows(rows)
         return "\n".join(["🔧 HV Name Changed"] + changes)
 
     def _set_ramp(self, params: Dict[str, Any], field: str) -> str:
@@ -343,16 +330,17 @@ class HVControlTool(BaseTool):
             return "❌ 유효한 채널을 찾을 수 없습니다"
 
         value = float(params[key])
-        rows = self._read_config_rows()
-        row_map, _, _ = self._build_lookup(rows)
+        with self._CONFIG_LOCK:
+            rows = self._read_config_rows()
+            row_map, _, _ = self._build_lookup(rows)
 
-        for pair in pairs:
-            row = row_map.get(pair)
-            if not row:
-                return f"❌ Slot{pair[0]} Ch{pair[1]}이(가) config.txt에 없습니다"
-            row[field] = self._format_numeric(value)
+            for pair in pairs:
+                row = row_map.get(pair)
+                if not row:
+                    return f"❌ Slot{pair[0]} Ch{pair[1]}이(가) config.txt에 없습니다"
+                row[field] = self._format_numeric(value)
 
-        self._write_config_rows(rows)
+            self._write_config_rows(rows)
 
         out = [f"🔧 HV {field} Command Executed"]
         out.append(self._fmt_request(pairs) + f" {field} → {self._format_numeric(value)}")
@@ -406,7 +394,7 @@ class HVControlTool(BaseTool):
         out += self._run_per_slot(pairs, "--Status --VMon --IMon --V0Set --I0Set")
         return "\n".join(out)
 
-    # ===== 공통 헬퍼 =====
+    # 공통 보조 함수.
 
     def _run_per_slot(self, pairs: List[SlotCh], extra_args: str) -> List[str]:
         """(slot, ch) 리스트를 슬롯별로 그룹화하여 명령 실행, 결과 라인 리스트 반환"""
@@ -439,7 +427,7 @@ class HVControlTool(BaseTool):
         items = ", ".join(f"Slot{s}Ch{c}" for s, c in pairs)
         return f"📋 Request: {items}"
 
-    # ===== SSH 관리 =====
+    # SSH 연결 관리.
 
     def _ensure_connection(self) -> bool:
         try:
@@ -492,7 +480,7 @@ class HVControlTool(BaseTool):
 
         return output, error
 
-    # ===== Config 읽기/쓰기 =====
+    # 설정 읽기와 쓰기.
 
     def _read_config_rows(self) -> List[Dict[str, Any]]:
         """config.txt 읽기 — 첫 열: slot, 두 번째 열: ch"""
@@ -587,7 +575,7 @@ class HVControlTool(BaseTool):
         finally:
             sftp.close()
 
-    # ===== 채널 파싱 / 조회 =====
+    # 채널 파싱과 조회.
 
     def _build_lookup(self, rows: List[Dict[str, Any]]):
         """rows에서 (row_map, name_map, all_pairs) 반환"""
@@ -627,12 +615,12 @@ class HVControlTool(BaseTool):
         """
         identifier = str(identifier).strip()
 
-        # "slot:ch" 명시 형식
+        # 명시적인 "slot:channel" 형식.
         m = re.match(r'^(\d+):(\d+)$', identifier)
         if m:
             return [(int(m.group(1)), int(m.group(2)))]
 
-        # 순수 숫자 → 슬롯 정보 없이 ch만 지정된 경우 → 에러로 명시 요청
+        # 채널 번호만 있으면 슬롯 입력을 요청한다.
         if re.match(r'^\d+$', identifier):
             ch = int(identifier)
             slots = sorted({s for s, c in all_pairs if c == ch})
@@ -647,15 +635,14 @@ class HVControlTool(BaseTool):
 
         name_key = identifier.upper()
 
-        # C / S side 선택: 타워 채널 이름 "T1C..T9C"/"T1S..T9S" (모듈 접두 형식도 허용).
-        # (TRIG1/TRIG2, MCP-C/MCP-S 같은 특수 채널은 제외 — 순수 타워 채널만)
+        # C/S 선택은 타워 채널에만 적용한다.
         if name_key in ("C", "S"):
             return sorted(
                 pair for name, pair in name_map.items()
                 if re.match(rf'^(?:M\d+[-_ ]?)?T\d+[-_ ]?{name_key}$', name)
             )
 
-        # Tower 선택: "T1"~"T9" → 해당 타워의 C/S 채널
+        # 타워 이름은 해당 C/S 채널 쌍을 선택한다.
         tower_m = re.match(r'^T(\d+)$', name_key)
         if tower_m:
             tn = tower_m.group(1)
@@ -664,7 +651,7 @@ class HVControlTool(BaseTool):
                 if re.match(rf'^(?:M\d+[-_ ]?)?T{tn}[-_ ]?[CS]$', name)
             )
 
-        # Name lookup
+        # 채널 이름 조회.
         if name_key in name_map:
             return [name_map[name_key]]
 
@@ -675,7 +662,7 @@ class HVControlTool(BaseTool):
         rows = self._read_config_rows()
         _, name_map, all_pairs = self._build_lookup(rows)
 
-        # 리스트 형태
+        # 채널 목록.
         if isinstance(channels, list):
             result: List[SlotCh] = []
             for item in channels:
@@ -704,43 +691,43 @@ class HVControlTool(BaseTool):
 
         expr = str(channels).strip()
 
-        # all / 전체
+        # 전체 채널.
         if expr.lower() in ('all', '전체'):
             return sorted(set(all_pairs))
 
-        # even
+        # 짝수 채널.
         if expr.lower() == 'even':
             return sorted({(s, c) for s, c in all_pairs if c % 2 == 0})
 
-        # odd
+        # 홀수 채널.
         if expr.lower() == 'odd':
             return sorted({(s, c) for s, c in all_pairs if c % 2 == 1})
 
-        # "slot:12:even" / "slot:12:odd"
+        # 슬롯별 홀짝 채널.
         m = re.match(r'^slot[:\s]?(\d+)[:\s](even|odd)$', expr, re.IGNORECASE)
         if m:
             target = int(m.group(1))
             parity = 0 if m.group(2).lower() == 'even' else 1
             return sorted({(s, c) for s, c in all_pairs if s == target and c % 2 == parity})
 
-        # "slot:12" / "slot12" / "slot 12"
+        # 슬롯 선택 표현.
         m = re.match(r'^slot[:\s]?(\d+)$', expr, re.IGNORECASE)
         if m:
             target = int(m.group(1))
             return sorted({(s, c) for s, c in all_pairs if s == target})
 
-        # "11:3" 명시적 pair
+        # 명시적인 슬롯·채널 쌍.
         m = re.match(r'^(\d+):(\d+)$', expr)
         if m:
             return [(int(m.group(1)), int(m.group(2)))]
 
-        # "N-M" ch 번호 범위 (전 슬롯)
+        # 모든 슬롯의 채널 번호 범위.
         m = re.match(r'^(\d+)-(\d+)$', expr)
         if m:
             lo, hi = int(m.group(1)), int(m.group(2))
             return sorted({(s, c) for s, c in all_pairs if lo <= c <= hi})
 
-        # 쉼표 구분 목록: 순수 숫자들이면 ch 번호 목록, 아니면 이름/slot:ch
+        # 쉼표 목록을 채널 번호 또는 채널 표현으로 해석한다.
         parts = [p.strip() for p in expr.split(',') if p.strip()]
         if parts and all(re.match(r'^\d+$', p) for p in parts):
             ch_set = {int(p) for p in parts}
@@ -751,7 +738,7 @@ class HVControlTool(BaseTool):
             result.extend(self._resolve_identifier(part, name_map, all_pairs))
         return sorted(set(result))
 
-    # ===== 유틸 =====
+    # 유틸리티.
 
     def _format_numeric(self, value: Any) -> str:
         try:

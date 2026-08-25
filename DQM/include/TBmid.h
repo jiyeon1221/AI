@@ -72,6 +72,9 @@ public:
   long long local_trig_time() const { return local_trig_time_; }
   void setLocal(int nu, int pa, long long ti);
 
+  const std::vector<int> GetDrsStop() const { return drsStop_; }
+  void setDrsStop(std::vector<int> drsStop) { drsStop_ = drsStop; }
+
   int channelsize() const { return channelsize_; }
 
   void print();
@@ -90,6 +93,7 @@ private:
   int local_trig_number_;
   int local_trigger_pattern_;
   long long local_trig_time_;
+  std::vector<int> drsStop_;
 };
 
 template <class T> // waveform or fastmode

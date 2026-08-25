@@ -30,7 +30,7 @@ class HVEqualizationSimAgent(SimExecMixin, _ADCSimAgent):
 
             if tool_name == "motor_x_move_tool":
                 x = self._motor_x_for_current_step()
-                # override(state 기준 x) 후 표시 — 표시값과 실제 이동값 일치.
+                # 상태의 X 좌표로 시뮬레이션 매개변수를 확정한다.
                 self._sim_emit_tool_call(tool_name, {"x": x})
                 self.io.send_tool_output(f"[Motor] X축 이동 시작 ({self.tower}): {x:.3f} mm")
                 result = self._sim.motor_move(x, self.tower)
@@ -50,15 +50,13 @@ class HVEqualizationSimAgent(SimExecMixin, _ADCSimAgent):
                     self.state["last_run_number"] = run_number
                     self.state["iterations"] = self.state.get("iterations", 0) + 1
                     self.log(f"[SIM] DAQ Run {run_number} 완료: {self.tower}, {params.get('events', 0)} events")
-                self.state["needs_suggest"] = False   # hv 고유 부킹
+                self.state["needs_suggest"] = False   # HV 제안 대기 상태.
                 return result
 
             if tool_name == "hv_execute_tool":
                 return self._mock_hv_execute(params)
 
-            # suggest / done_channel 은 부모(ADC-sim) 로직 그대로 사용.
-            # 부모의 hv_equalization_suggest는 _measure_adc(=시뮬레이션) + process_suggestion을 호출한다.
-            # params override가 없는 tool이라 표시는 그대로 먼저 찍어도 된다.
+            # HV 제안과 채널 완료는 부모의 ADC 시뮬레이션을 사용한다.
             self._sim_emit_tool_call(tool_name, params)
             return super()._execute_tool(tool_name, params)
 
@@ -71,7 +69,7 @@ class HVEqualizationSimAgent(SimExecMixin, _ADCSimAgent):
         cmd = params.get("command", "").lower()
 
         if cmd == "voltage":
-            # last_suggested로 override (LLM 방향 오류 방지), done 채널 제외
+            # 미완료 채널에 마지막 제안 전압을 적용한다.
             if self.state.get("last_suggested_hv_c") is not None:
                 cv = {}
                 if not self.state.get("channel_done_c", False):
@@ -80,7 +78,7 @@ class HVEqualizationSimAgent(SimExecMixin, _ADCSimAgent):
                     cv[f"{self.tower}S"] = self.state["last_suggested_hv_s"]
                 if cv:
                     self._apply_hv_voltage_params_from_state(params, cv)
-            # override 후 표시 — 실제 인가 전압과 일치.
+            # 확정된 인가 전압을 표시한다.
             self._sim_emit_tool_call("hv_execute_tool", params)
             result = self._sim.hv_voltage(params.get("channel_values", {}))
             self.io.send_tool_output(result)
@@ -90,7 +88,9 @@ class HVEqualizationSimAgent(SimExecMixin, _ADCSimAgent):
                 self.state["last_hv_s"] = self.state["last_suggested_hv_s"]
             self.state["last_suggested_hv_c"] = None
             self.state["last_suggested_hv_s"] = None
-            self.state["approval_confirmed"] = False  # 다음 승인 라운드용 리셋
+            self.state["last_adc_c"] = None
+            self.state["last_adc_s"] = None
+            self.state["approval_confirmed"] = False  # 다음 승인을 기다린다.
 
             self.io.send_tool_output(f"🔍 [SIM] HV 적용 확인 중 ({self.tower})...")
             verify = self._sim.hv_status([f"{self.tower}C", f"{self.tower}S"])

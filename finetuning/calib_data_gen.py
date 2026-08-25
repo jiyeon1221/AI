@@ -1,16 +1,5 @@
 #!/usr/bin/env python3
-"""
-Training data generator for CalibScanAgent
-
-Code-authoritative bookkeeping (calib_scan_agent.py와 동일):
-  - 위치/확인/완료 플래그(x_moved, y_confirmed, tower completed, current_tower_idx,
-    종료)는 드라이버(코드)가 소유한다. 모델은 message와 tool 호출만 출력한다.
-  - 따라서 예전의 y_confirmed / completed "tool:none" 턴과 최종 완료 메시지 턴은
-    학습 데이터에서 제거한다 (시스템이 처리).
-
-build_full_context / _build_state_context / _get_step_hint 포맷이
-CalibScanAgent와 완전히 동일하도록 유지.
-"""
+"""CalibScanAgent 워크플로우와 동일한 형식의 학습 데이터를 생성한다."""
 
 import json
 import random
@@ -19,9 +8,14 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+from agents.base_agent import build_prompt_context
 from config import MSG_PLOT_CONFIRM
-
-TOWER_ORDER = ["T1", "T2", "T3", "T6", "T5", "T4", "T7", "T8", "T9"]
+from finetuning.data_gen_common import (
+    TOWER_ORDER,
+    make_example as _make_example,
+    random_events,
+    write_dataset,
+)
 
 MESSAGE_ENERGY_REQ = "에너지를 입력하세요."
 MESSAGE_EVENTS_REQ = "이벤트를 몇개 받을까요?"
@@ -90,11 +84,6 @@ When ALL towers are completed, the SYSTEM sends the completion message and ends 
 """
 
 
-def random_events():
-    digits = random.randint(3, 6)
-    return random.randint(10 ** (digits - 1), 10 ** digits - 1)
-
-
 def _build_state_context(state: Dict, tower_positions: Dict) -> str:
     lines = []
     lines.append(f"Phase: {state['phase']}")
@@ -117,16 +106,6 @@ def _build_state_context(state: Dict, tower_positions: Dict) -> str:
             )
         else:
             lines.append(f"     {tower} (x:{pos['x']:.3f}, y:{pos['y']:.3f}): Pending")
-    return "\n".join(lines)
-
-
-def _build_history_context(history: List[Dict]) -> str:
-    if not history:
-        return "(No conversation yet)"
-    lines = []
-    for msg in history[-10:]:
-        role = "User" if msg["role"] == "user" else "Agent"
-        lines.append(f"{role}: {msg['content']}")
     return "\n".join(lines)
 
 
@@ -182,36 +161,20 @@ def _get_step_hint(state: Dict, history: List[Dict]) -> str:
 
 def build_full_context(state: Dict, history: List[Dict], tower_positions: Dict,
                        current_input: Optional[str] = None) -> str:
-    if current_input is None and history and history[-1]["role"] == "user":
-        current_input = history[-1]["content"]
-        temp_history = history[:-1]
-    else:
-        temp_history = history
-
-    parts = ["=== Current State ===", _build_state_context(state, tower_positions), ""]
-    parts.append("=== Recent Conversation ===")
-    parts.append(_build_history_context(temp_history))
-    parts.append("")
-    if current_input:
-        parts.append("=== Current User Input ===")
-        parts.append(current_input)
-        parts.append("")
-    parts.append("=== Your Task ===")
-    parts.append(_get_step_hint(state, history))
-    parts.append("")
-    parts.append("Output JSON with tool name and parameters.")
-    return "\n".join(parts)
+    return build_prompt_context(
+        _build_state_context(state, tower_positions),
+        history,
+        current_input=current_input,
+        step_hint=_get_step_hint(state, history),
+    )
 
 
 def make_example(state, history, tower_positions, decision, current_input=None):
-    ctx = build_full_context(state, history, tower_positions, current_input)
-    return {
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": ctx},
-            {"role": "assistant", "content": json.dumps(decision, ensure_ascii=False)},
-        ]
-    }
+    return _make_example(
+        SYSTEM_PROMPT,
+        build_full_context(state, history, tower_positions, current_input),
+        decision,
+    )
 
 
 def _init_tower_status():
@@ -300,13 +263,13 @@ def generate_config_only(energy: float, events: int,
         "needs_plot_confirm": False,
     }
 
-    # 0a: ask energy (history 비어있음 = 실제로 멈췄던 바로 그 첫 턴)
+    # 에너지 입력 요청.
     dec = {"message": MESSAGE_ENERGY_REQ}
     examples.append(make_example(state, history, tower_positions, dec))
     history.append({"role": "assistant", "content": json.dumps(dec, ensure_ascii=False)})
     history.append({"role": "user", "content": energy_input})
 
-    # 0b: parse energy → ask events (state.beam_energy still None at decision time)
+    # 에너지를 반영하고 이벤트 수를 요청한다.
     dec = {"message": MESSAGE_EVENTS_REQ, "update_state": {"beam_energy": energy, "phase": "config_events"}}
     examples.append(make_example(state, history, tower_positions, dec))
     history.append({"role": "assistant", "content": json.dumps(dec, ensure_ascii=False)})
@@ -418,8 +381,6 @@ def generate_workflow_from_mid(energy: float, events: int, start_idx: int) -> Li
 
 
 def main():
-    output_file = Path(__file__).parent / "data" / "calib_scan_data.json"
-    output_file.parent.mkdir(parents=True, exist_ok=True)
     all_ex = []
 
     ENERGIES = [1, 2, 5, 10, 20, 50, 100, 200]
@@ -454,12 +415,7 @@ def main():
         start_idx = random.choice([1, 2, 3, 4, 5, 6, 7])
         all_ex.extend(generate_workflow_from_mid(energy, events, start_idx))
 
-    with open(output_file, "w", encoding="utf-8") as f:
-        for ex in all_ex:
-            f.write(json.dumps(ex, ensure_ascii=False) + "\n")
-    lengths = [sum(len(m["content"]) for m in ex["messages"]) for ex in all_ex]
-    print(f"Generated {len(all_ex)} samples → {output_file}")
-    print(f"   char len  max={max(lengths):,}  avg={sum(lengths)/len(lengths):,.0f}")
+    write_dataset("calib_scan_data.json", all_ex)
 
 
 if __name__ == "__main__":

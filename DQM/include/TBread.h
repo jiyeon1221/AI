@@ -144,10 +144,7 @@ public:
   int GetCurrentEvent() { return fCurrentEvent; }
   int GetLiveMaxEvent();
   int GetLiveCurrentEvent();
-  // Returns true when a chunk is ready to be processed.
-  // Returns false when DAQ end sentinel (./output/Run<N>_END) is observed
-  // and no more data files remain — caller should break the live loop.
-  bool CheckNextFileExistence();
+  void CheckNextFileExistence();
 
 private:
   void init();

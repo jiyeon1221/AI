@@ -51,20 +51,13 @@ public:
 
   void SaveAs(TString output = "");
 
-  // Hodoscope filling (16x16 fiber map of the highest-amplitude X/Y bin per
-  // event). Called from Fill() when --AUX is set.
+  // 이벤트별 최댓값으로 16×16 호도스코프 맵을 채운다.
   void FillHodoscope(TBevt<TBwaveform> anEvent);
 
-  // Brightest-fiber positions in fiber coordinates (= mm; 1 fiber = 1 mm).
-  // Returns { x_intADC, y_intADC, x_peakADC, y_peakADC } as raw bin
-  // centers (range 0..16). Empty vector if the hodoscope is disabled or
-  // channel data is missing. Used both by FillHodoscope() and by
-  // IsPassing() (for the WC+Hodo inclination cut).
+  // 가장 밝은 섬유의 IntADC·PeakADC X/Y 위치를 반환한다.
   std::vector<float> GetHodoscopeRawPosition(TBevt<TBwaveform> anEvent);
 
-  // Pedestal window length used by Get{Int,Peak}ADC. Configurable per
-  // channel name through config_general.yml::PedestalBins (see TBpedConfig).
-  // Default 100 bins if no rule matches.
+  // 채널별 pedestal 구간을 반환하며 기본값은 100 bin이다.
   double GetPeakADC(std::vector<short> waveform, int xInit, int xFin, int pedBins = 100);
   double GetIntADC(std::vector<short> waveform, int xInit, int xFin, int pedBins = 100);
 
@@ -98,16 +91,9 @@ public:
   }
   void SetApp(TApplication* fApp_) { fApp = fApp_; }
   void SetAUXCut(bool fAuxCut_) { fAuxCut = fAuxCut_; }
-  // AUXcut mode: "WC" applies only the WC POSCUT (legacy behavior),
-  // "WCHodo" additionally requires |WC_corr − Hodo_corr| < INCLINATION_CUT
-  // on both axes. Any unrecognised value falls back to "WC".
+  // AUX 컷 범위는 WC 또는 WCHodo이다.
   void SetAUXCutMode(const std::string& fAuxCutMode_) { fAuxCutMode = fAuxCutMode_; }
-  // AUX scope mode: "WC" | "Hodo" | "WCHodo". Selects which AUX
-  // subsystems to plot. Must be called BEFORE init() so the CID
-  // resolution can skip subsystems the operator didn't ask for —
-  // critical when one of the subsystems (e.g. hodoscope MID 17) is
-  // physically absent from the setup. Unrecognised values are normalised
-  // to "WCHodo" inside init().
+  // 초기화 전에 플롯에 사용할 AUX 장비 범위를 지정한다.
   void SetAUXMode(const std::string& fAuxMode_) { fAuxMode = fAuxMode_; }
   void SetParticle(std::string fParticle_);
 
@@ -125,13 +111,9 @@ private:
   // AUXcut mode: "WC" (default) or "WCHodo". See SetAUXCutMode().
   std::string fAuxCutMode;
   // AUX scope mode: "WC" | "Hodo" | "WCHodo". See SetAUXMode().
-  // Default "WCHodo" preserves legacy behaviour: --AUX without an
-  // explicit --AUXMode still plots both subsystems.
+  // AUX 장비 범위의 기본값은 WCHodo이다.
   std::string fAuxMode;
-  // Beam-inclination cut (mm) for the WCHodo mode. Read from
-  // AUX.INCLINATION_CUT; defaults to [4, 4]. Stored as 2 entries
-  // [X_cut, Y_cut]; if the YAML provides fewer entries the default
-  // is kept.
+  // WCHodo 기울기 컷 [X, Y]이며 기본값은 [4, 4] mm이다.
   std::vector<double> fInclinationCut;
   std::string fParticle;
 
@@ -146,21 +128,6 @@ private:
 
   TH2D* fWCPosition;
 
-  // TH1D* fPS;
-  // TH1D* fMC;
-  // TH1D* fTC;
-  // TH1D* fCC1;
-  // TH1D* fCC2;
-
-  // TH1D* fFrameTop;
-  // TH1D* fFrameBot;
-
-  // double fPScut;
-  // double fPSInitCut;
-  // double fPSFinCut;
-  // double fMCcut;
-  // double fCC1cut;
-  // double fCC2cut;
   double fWCThreshold;
   double fWCCalibration;
   std::vector<double> fWCReference; // timing reference per axis
@@ -169,52 +136,36 @@ private:
   std::vector<TBcid> fCIDtoPlot;
   std::map<std::string, std::vector<int>> fRangeMap;
 
-  // True only when all three WC channels (WCX/WCY/NIM) resolved to valid
-  // CIDs in the loaded mapping. Used to gate Fill()/IsPassing() so a mapping
-  // without WC (e.g. mapping_TB2025_v1.root for MCPPMT runs) doesn't crash
-  // when --AUX or --AUXcut is requested.
+  // WCX, WCY, NIM 채널이 모두 매핑됐는지 나타낸다.
   bool fWCEnabled;
   TBcid fCID_WCX;
   TBcid fCID_WCY;
   TBcid fCID_NIM;
 
-  // ── Hodoscope (16 X-fibers × 16 Y-fibers) ───────────────────────────────
-  // Channel-name lists currently use the dummy tower-channel names from
-  // draw_hodoscope.cc; once the proper hodoscope mapping is delivered they
-  // can be swapped for X1..X16 / Y1..Y16 without touching the logic.
+  // 16×16 호도스코프 채널과 출력 객체.
   bool fHodoEnabled;
   std::vector<TBcid> fCID_HodoX;   // 16 entries
   std::vector<TBcid> fCID_HodoY;   // 16 entries
-  // Per-fiber search-window [first, last] for the brightest-fiber scan.
-  // The same window feeds both GetIntADC and GetPeakADC for that fiber.
-  // Read from ModuleConfig.HX1..HX16 / HY1..HY16 in SetRange(); falls back
-  // to (150, 350) per fiber when an entry is missing.
+  // 섬유별 IntADC·PeakADC 검색 구간이며 기본값은 [150, 350]이다.
   std::vector<int> fHodoFirstX;    // 16 entries
   std::vector<int> fHodoLastX;     // 16 entries
   std::vector<int> fHodoFirstY;    // 16 entries
   std::vector<int> fHodoLastY;     // 16 entries
-  // Reference fiber position (X_ref, Y_ref) where the beam-center sits
-  // before any correction. Read from AUX.Hodoscope.CENTER; defaults to
-  // the nominal center (8, 8) which means "no correction".
+  // 보정 전 빔 중심 섬유 위치이며 기본값은 (8, 8)이다.
   std::vector<float> fHodoCenter;
-  // Which brightest-fiber metric feeds the WC↔Hodo inclination cut.
-  // Read from AUX.Hodoscope.CUT_METHOD; "IntADC" (default) or "PeakADC".
-  // Unrelated to fMethod (which controls the *main* DQM plots).
+  // 기울기 컷에 사용할 IntADC 또는 PeakADC 위치 방식.
   std::string fHodoCutMethod;
-  // Per-channel normalization constants read from config_general.yml
-  // (AUX.Hodoscope.NORM_CONST_INTADC / NORM_CONST_PEAKADC).
-  // calibrated = raw / norm_const; all 1.0 means no normalization.
+  // 호도스코프 채널별 IntADC·PeakADC 정규화 상수.
   std::vector<double> fHodoNormIntADC_X;   // 16 entries (HX1..HX16)
   std::vector<double> fHodoNormIntADC_Y;   // 16 entries (HY1..HY16)
   std::vector<double> fHodoNormPeakADC_X;  // 16 entries (HX1..HX16)
   std::vector<double> fHodoNormPeakADC_Y;  // 16 entries (HY1..HY16)
-  // Raw hit-map of the brightest X/Y fiber per event.
+  // 이벤트별 최댓값 섬유의 원시 hit map.
   TH2F* fHodoIntADC;
   TH2F* fHodoPeakADC;
   TCanvas* fCanvasHodoIntADC;
   TCanvas* fCanvasHodoPeakADC;
-  // Same maps, shifted by -fHodoCenter + (8, 8) so the beam appears at
-  // the nominal hodoscope center.
+  // 빔 중심을 (8, 8)에 맞춘 보정 hit map.
   TH2F* fHodoIntADC_corr;
   TH2F* fHodoPeakADC_corr;
   TCanvas* fCanvasHodoIntADC_corr;

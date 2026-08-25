@@ -60,16 +60,7 @@
 #define OP_INCREMENTAL_CMD  2    /* incremental from command pos   */
 #define OP_INCREMENTAL_FB   3    /* incremental from feedback pos  */
 
-/* ── Motor / driver physical constants ─────────────────────────────────── */
-/*
- * EZSM6020AZAK (EZS6 series, 20 mm stroke, AZ motor built-in):
- *   Lead screw pitch    : 8 mm / rev   (EZS6 standard)
- *   Driver resolution   : 1000 steps / rev  (AZ Series default)
- *   → STEPS_PER_MM      = 1000 / 8 = 125 steps/mm
- *   → Stroke max        : 20 mm → 2500 steps
- *
- * Verify these values against your MEXE02 parameter settings.
- */
+/* MEXE02에 설정된 모터 해상도와 이동 범위. */
 #define STEPS_PER_MM        100.0f   /* 0.01 mm/step — confirmed in MEXE02 title bar */
 #define STROKE_MAX_MM       200.0f   /* EZSM6E020AZAK: 200 mm stroke, 6 mm/rev lead */
 

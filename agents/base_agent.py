@@ -4,20 +4,17 @@
 import json
 import re
 import time
-import torch
-from typing import Dict, Any, Optional, List, Callable
+from typing import Dict, Any, Optional, List, Callable, Tuple
 from datetime import datetime
 from pathlib import Path
 from abc import ABC, abstractmethod
 
-from transformers import (
-    AutoTokenizer,
-    AutoModelForCausalLM,
-)
-
 import sys
 sys.path.append(str(Path(__file__).parent.parent))
-from config import MAX_CONVERSATION_HISTORY, MAX_NEW_TOKENS
+from config import MAX_CONVERSATION_HISTORY, MAX_NEW_TOKENS, MSG_PLOT_CONFIRM
+import tools.motor_control_tool as motor
+
+# 학습 라이브러리는 추론 시점에만 불러온다.
 
 
 class ToolFatalError(Exception):
@@ -25,15 +22,119 @@ class ToolFatalError(Exception):
     pass
 
 
-# ── 이벤트 개수 표시 유틸 ──
-# 모델이 자릿수(0의 개수)를 자주 틀리므로, 사용자에게 보이는 이벤트 개수는
-# 항상 코드가 state의 진짓값으로부터 렌더링/교정한다. LLM 출력 텍스트를 신뢰하지 않는
-# 기존 원칙(_finalize_ai_message)의 이벤트-개수판.
+# 런타임과 학습 데이터가 공유하는 컨텍스트 조립기.
+# 학습 데이터의 무제한 대화 기록을 최근 항목으로 제한한다.
+HISTORY_WINDOW = 10
+
+NO_CONVERSATION = "(No conversation yet)"
+DEFAULT_STEP_HINT = "Based on the current state and conversation, decide the next action."
+OUTPUT_INSTRUCTION = "Output JSON with tool name and parameters."
+
+
+def summarize_agent_content(content: Any) -> str:
+    """Assistant 결정에서 다음 판단에 필요한 정보만 한 줄로 요약한다."""
+    if not isinstance(content, str):
+        return str(content)
+    try:
+        decision = json.loads(content)
+    except (TypeError, ValueError):
+        return content
+    if not isinstance(decision, dict):
+        return content
+
+    if "message" in decision:
+        return decision["message"]
+    if "tool" not in decision:
+        return content
+
+    tool = decision["tool"]
+    params = decision.get("params") or {}
+    summary = f"[Tool Call: {tool}]"
+
+    if tool in ("dqm_plot", "run_log"):
+        run = params.get("run_number") or params.get("run_num")
+        if run:
+            summary += f" run={run}"
+    if tool == "dqm_plot" and params.get("type"):
+        summary += f" type={params['type']}"
+        if params.get("modules"):
+            summary += f" modules={params['modules']}"
+    if tool in ("hv_write", "hodoscope_hv_write"):
+        cmd = params.get("command", "")
+        ch = params.get("channels", "")
+        v = params.get("voltage") or params.get("value", "")
+        summary += f" cmd={cmd} ch={ch}" + (f" v={v}" if v != "" else "")
+    if tool in ("motor_move", "motor_x_move_tool") and params.get("x") is not None:
+        summary += f" x={params['x']}mm"
+    if tool == "daq_run_tool":
+        if params.get("beam_energy") is not None:
+            summary += f" energy={params['beam_energy']}GeV"
+        if params.get("events") is not None:
+            summary += f" events={params['events']}"
+    if tool == "hv_suggest_tool" and params.get("tower"):
+        summary += f" tower={params['tower']}"
+    if tool == "hv_execute_tool":
+        cmd = params.get("command", "")
+        if cmd:
+            summary += f" cmd={cmd}"
+        cv = params.get("channel_values")
+        if cv:
+            summary += " " + " ".join(f"{k}={v}" for k, v in cv.items())
+
+    if "update_state" in decision:
+        summary += f" (Update State: {list(decision['update_state'].keys())})"
+    return summary
+
+
+def build_history_context(history: Optional[List[Dict]], window: int = HISTORY_WINDOW) -> str:
+    """최근 대화를 'User: ...' / 'Agent: ...' 줄로. Agent 턴은 요약된다."""
+    if not history:
+        return NO_CONVERSATION
+    lines = []
+    for msg in history[-window:]:
+        if msg["role"] == "user":
+            lines.append(f"User: {msg['content']}")
+        else:
+            lines.append(f"Agent: {summarize_agent_content(msg['content'])}")
+    return "\n".join(lines)
+
+
+def split_current_input(
+    history: Optional[List[Dict]],
+    current_input: Optional[str] = None,
+) -> Tuple[Optional[str], List[Dict]]:
+    """현재 사용자 입력과 이전 대화를 분리한다."""
+    history = history or []
+    if current_input is None and history and history[-1]["role"] == "user":
+        return history[-1]["content"], history[:-1]
+    return current_input, history
+
+
+def build_prompt_context(
+    state_context: str,
+    history: Optional[List[Dict]] = None,
+    *,
+    current_input: Optional[str] = None,
+    step_hint: str = DEFAULT_STEP_HINT,
+    window: int = HISTORY_WINDOW,
+) -> str:
+    """모델에 넣는 user 메시지 전체를 조립한다 (agent/data_gen 공통 형식)."""
+    current_input, prior = split_current_input(history, current_input)
+
+    parts = ["=== Current State ===", state_context, ""]
+    parts += ["=== Recent Conversation ===", build_history_context(prior, window), ""]
+    if current_input:
+        parts += ["=== Current User Input ===", current_input, ""]
+    parts += ["=== Your Task ===", step_hint, "", OUTPUT_INSTRUCTION]
+    return "\n".join(parts)
+
+
+# 사용자 메시지의 이벤트 수를 상태값과 일치시킨다.
 
 _EVENT_KEYWORD = r'(?:이벤트|events?|evt)'
-# 숫자(콤마 허용)가 이벤트 키워드 바로 앞: "10000 이벤트", "10,000개 events"
+# 숫자가 이벤트 단위 앞에 오는 표현.
 _RE_NUM_BEFORE_EVENT = re.compile(r'([\d,]+)(\s*개?\s*' + _EVENT_KEYWORD + r')', re.IGNORECASE)
-# 이벤트 키워드(+ 수/콜론)가 숫자 바로 앞: "이벤트 수: 10000", "events: 1000", "이벤트 10000개"
+# 이벤트 단위가 숫자 앞에 오는 표현.
 _RE_NUM_AFTER_EVENT = re.compile(r'(' + _EVENT_KEYWORD + r'\s*수?\s*[:：]?\s*)([\d,]+)', re.IGNORECASE)
 
 
@@ -49,7 +150,7 @@ _RE_NUMBER = re.compile(r'\d+(?:\.\d+)?')
 _RE_GEV_SUFFIX = re.compile(r'\s*(?:GeV|기가)', re.IGNORECASE)
 
 
-# 천 단위 콤마 그룹 후보: "50,000" / "1,234,567" (콤마 뒤 정확히 3자리 반복)
+# 천 단위 쉼표가 포함된 숫자.
 _RE_COMMA_GROUP = re.compile(r'\d{1,3}(?:,\d{3})+(?!\d)')
 
 
@@ -59,7 +160,7 @@ def _normalize_thousands_commas(text: str) -> str:
     (빔 에너지는 최대 수백 GeV라 천 단위 콤마가 필요한 경우가 없음)."""
     def _repl(m):
         if _RE_GEV_SUFFIX.match(text, m.end()):
-            return m.group()  # 에너지 나열 → 콤마 보존
+            return m.group()  # 에너지 목록의 구분 쉼표는 유지한다.
         return m.group().replace(',', '')
     return _RE_COMMA_GROUP.sub(_repl, text)
 
@@ -122,8 +223,7 @@ class BaseAgent(ABC):
         self.state = {}
         self.conversation_history: List[Dict[str, Any]] = []
         self.max_history = MAX_CONVERSATION_HISTORY
-        # 숫자 출처 검증용: LLM이 update_state에 넣는 숫자가 이 입력에 실제로
-        # 등장했는지 _guard_update_state에서 확인한다.
+        # 상태 업데이트의 숫자를 검증할 원문 입력.
         self._last_user_input: str = ""
     
     def __enter__(self):
@@ -137,7 +237,10 @@ class BaseAgent(ABC):
     def load(self):
         if self.model is not None:
             return
-        
+
+        import torch
+        from transformers import AutoTokenizer, AutoModelForCausalLM
+
         if torch.backends.mps.is_available():
             self.device = "mps"
             print(f"  ✅ [{self.agent_name}] MPS 사용")
@@ -167,6 +270,8 @@ class BaseAgent(ABC):
         print(f"  ✅ [{self.agent_name}] 모델 로드 완료: {self.model_path}")
 
     def unload(self):
+        import torch
+
         if self.model is not None:
             del self.model
             self.model = None
@@ -206,73 +311,23 @@ class BaseAgent(ABC):
     def _build_state_context(self) -> str:
         pass
 
-    def _build_history_context(self) -> str:
-        if not self.conversation_history:
-            return "(No conversation yet)"
-        
-        lines = []
-        recent_history = self.conversation_history[-self.max_history:]
-        for msg in recent_history:
-            role = "User" if msg["role"] == "user" else "Agent"
-            content = msg["content"]
+    def _get_step_hint(self) -> str:
+        """'=== Your Task ===' 아래 들어갈 한 줄. 시나리오 agent가 현재 단계를 알린다."""
+        return DEFAULT_STEP_HINT
 
-            if role == "Agent":
-                try:
-                    decision = json.loads(content)
-                    if "message" in decision:
-                        content = decision["message"]
-                    elif "tool" in decision:
-                        tool = decision["tool"]
-                        params = decision.get("params", {})
-                        summary = f"[Tool Call: {tool}]"
-                        if tool in ("dqm_plot", "run_log") and params.get("run_number") or params.get("run_num"):
-                            run = params.get("run_number") or params.get("run_num")
-                            summary += f" run={run}"
-                        if tool == "dqm_plot" and params.get("type"):
-                            summary += f" type={params['type']}"
-                            if params.get("modules"):
-                                summary += f" modules={params['modules']}"
-                        if tool in ("hv_write", "hodoscope_hv_write"):
-                            cmd = params.get("command", "")
-                            ch = params.get("channels", "")
-                            v = params.get("voltage") or params.get("value", "")
-                            summary += f" cmd={cmd} ch={ch}" + (f" v={v}" if v != "" else "")
-                        if tool == "motor_move" and params.get("x") is not None:
-                            summary += f" x={params['x']}mm"
-                        if "update_state" in decision:
-                            summary += f" (Update State: {list(decision['update_state'].keys())})"
-                        content = summary
-                except:
-                    pass
-
-            lines.append(f"{role}: {content}")
-        
-        return "\n".join(lines)
-    
     def build_full_context(self, current_input: Optional[str] = None) -> str:
-        parts = []
-        
-        parts.append("=== Current State ===")
-        parts.append(self._build_state_context())
-        parts.append("")
-        
-        parts.append("=== Recent Conversation ===")
-        parts.append(self._build_history_context())
-        parts.append("")
-        
-        if current_input:
-            parts.append("=== Current User Input ===")
-            parts.append(current_input)
-            parts.append("")
-        
-        parts.append("=== Your Task ===")
-        parts.append("Based on the current state and conversation, decide the next action.")
-        parts.append("Output JSON with tool name and parameters.")
-        
-        return "\n".join(parts)
+        return build_prompt_context(
+            self._build_state_context(),
+            self.conversation_history,
+            current_input=current_input,
+            step_hint=self._get_step_hint(),
+        )
+
     
     def decide(self, context: str, max_retries: int = 3) -> Dict[str, Any]:
         """LLM inference → JSON. 첫 시도 greedy, 재시도 sampling."""
+        import torch
+
         if self.model is None:
             raise RuntimeError(f"[{self.agent_name}] Model not loaded. Use with statement or call load().")
 
@@ -342,7 +397,7 @@ class BaseAgent(ABC):
     def _get_system_prompt(self) -> str:
         pass
 
-    # ── Tool params: LLM 출력 무시, state가 source of truth ──
+    # 도구 매개변수는 상태값을 기준으로 확정한다.
 
     def _position_for_current_step(self) -> Optional[Dict[str, float]]:
         return None
@@ -413,6 +468,41 @@ class BaseAgent(ABC):
             self.log("WARNING: DAQ output에서 run number를 찾지 못함")
         return run_number
 
+    # 시나리오 에이전트가 공유하는 모터·DAQ 실행 순서.
+
+    def _run_motor_x_move(self, label: str) -> str:
+        """현재 단계의 X 좌표로 모터를 옮긴다. x_moved 부킹은 호출자 몫."""
+        x = self._motor_x_for_current_step()
+        self.io.send_tool_output(f"[Motor] X축 이동 시작 ({label}): {x:.3f} mm")
+
+        def _do_move():
+            ok, msg = motor.move_x(x)
+            if not ok:
+                raise RuntimeError(msg)
+            return msg
+
+        result = self._run_tool_with_retry(_do_move, "motor_x_move_tool")
+        self.io.send_tool_output(f"[Motor] {result}")
+        return result
+
+    def _run_daq_from_state(self, params: Dict[str, Any], **daq_kwargs):
+        """state를 진짓값으로 DAQ를 돌리고 (출력, run number)를 돌려준다.
+
+        DAQ 직후에는 항상 사용자 plot 확인이 필요하므로 needs_plot_confirm을 세운다.
+        daq_tool 내부의 dqm_session.start()이 monit --LIVE를 띄워 DAQ 동안 우측 하단
+        DQM 패널이 갱신된다 — 여기가 유일한 플롯 경로다.
+        """
+        self._apply_daq_params_from_state(params, **daq_kwargs)
+        result = self._run_tool_with_retry(
+            lambda: self.daq_tool.execute(params, line_callback=self.io.send_tool_output),
+            "daq_run_tool",
+        )
+        run_number = self._extract_run_number(result)
+        if run_number:
+            self.state["last_run_number"] = run_number
+        self.state["needs_plot_confirm"] = True
+        return result, run_number
+
     def _run_tool_with_retry(self, tool_fn: Callable, tool_name: str, max_retries: int = 3) -> str:
         while True:
             last_error = None
@@ -433,7 +523,7 @@ class BaseAgent(ABC):
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         print(f"[{timestamp}] [{self.agent_name}] {message}", flush=True)
     
-    # ── Run loop hooks (서브클래스가 필요 시 override) ──
+    # 서브클래스용 실행 루프 훅.
 
     def _print_banner(self):
         print(f"\n{'='*70}\n⚡ {self.agent_name} Started\n{'='*70}")
@@ -450,7 +540,22 @@ class BaseAgent(ABC):
         return None
 
     def _guard_ai_message(self, message: str) -> Optional[str]:
-        """거부 사유 반환 → 출력 차단 후 재시도. None이면 통과."""
+        """거부 사유 반환 → 출력 차단 후 재시도. None이면 통과.
+
+        기본 동작: DAQ가 돌기도 전에 plot 확인 메시지를 내보내는 것을 막는다.
+        서브클래스는 super()를 먼저 호출하고, 통과했을 때만 자기 검사를 이어갈 것.
+        """
+        if MSG_PLOT_CONFIRM in message and not self.state.get("needs_plot_confirm"):
+            return f"needs_plot_confirm=False — DO NOT send plot confirmation. {self._get_step_hint()}"
+        return None
+
+    def _plot_confirm_pending_rejection(self, tool_name: str) -> Optional[str]:
+        """plot 확인 대기 중 tool 호출을 막는 표준 사유. 통과면 None."""
+        if self.state.get("needs_plot_confirm"):
+            return (
+                f"needs_plot_confirm=True — DO NOT call {tool_name}. "
+                f'Send: {{"message": "{MSG_PLOT_CONFIRM}"}}'
+            )
         return None
 
     def _guard_update_state(self, updates: Dict[str, Any]) -> Optional[str]:
@@ -486,22 +591,16 @@ class BaseAgent(ABC):
 
         _error_count = 0
         _MAX_ERRORS = 3
-        # 워치독: 사용자 상호작용(message)도 없고 실제 tool 실행도 없이
-        # update_state만 반복하면(예: config에서 beam_energy=null 무한 반복)
-        # get_input()을 절대 호출하지 않아 stop_event도 못 보고 무한 루프에 빠진다.
+        # 상태 업데이트만 반복하는 무진행 루프를 감지한다.
         _no_progress = 0
         _MAX_NO_PROGRESS = 5
-        # 워치독2: guard(_guard_ai_message/_guard_tool)가 같은 결정을 계속 거부하면
-        # get_input()이 호출되지 않아 state가 진전되지 않고, greedy 디코딩이 거부된
-        # 출력(예: plot 확인 메시지)을 무한 반복한다. 실제 진행(메시지 전송/tool 실행/
-        # 사용자 입력)이 있을 때 0으로 리셋되고, 연속 거부만 누적되면 종료한다.
+        # 가드가 같은 결정을 반복 거부하는 경우도 감지한다.
         _guard_reject = 0
         _MAX_GUARD_REJECT = 6
 
         while True:
             try:
-                # get_input()이 호출되지 않는 경로(아래 update_state-only 등)에서도
-                # Stop 버튼(stop_event)에 반응해 깨끗이 빠져나가도록 매 반복 확인.
+                # 입력 대기 없이도 중지 요청을 확인한다.
                 if self._stop_requested():
                     self.log("Stop 요청 감지 — 종료합니다.")
                     break
@@ -530,7 +629,7 @@ class BaseAgent(ABC):
                 _error_count = 0
 
                 if "update_state" in decision:
-                    # 숫자 출처 검증 등 — 틀린 값이 state(진짓값)에 들어가기 전에 차단.
+                    # 검증되지 않은 값은 상태에 반영하지 않는다.
                     rejection = self._guard_update_state(decision["update_state"])
                     if rejection:
                         self.log(f"update_state guard blocked: {rejection}")
@@ -545,7 +644,7 @@ class BaseAgent(ABC):
                             )
                             break
                         continue
-                    _guard_reject = 0  # state가 실제로 진전 → 연속 거부 리셋
+                    _guard_reject = 0  # 상태가 진행되면 거부 횟수를 초기화한다.
                     before = self._completed_count()
                     self._update_state(decision["update_state"])
                     after = self._completed_count()
@@ -615,10 +714,7 @@ class BaseAgent(ABC):
                     continue
 
                 if "update_state" in decision:
-                    # message도 tool도 없이 update_state만 오는 턴. 정상 워크플로우에선
-                    # config 파싱(target_events→idle) 직후 딱 1번 나오고 곧바로 message
-                    # 턴으로 이어진다. 이게 연속으로 반복되면(모델이 config를 못 내보내는
-                    # 경우) 사용자 입력 없이 무한 루프 → 워치독으로 차단.
+                    # 상태 업데이트만 반복되면 워치독으로 종료한다.
                     self.add_to_history("assistant", json.dumps(decision, ensure_ascii=False))
                     _no_progress += 1
                     if _no_progress >= _MAX_NO_PROGRESS:
@@ -640,8 +736,7 @@ class BaseAgent(ABC):
             except KeyboardInterrupt:
                 break
             except Exception as e:
-                # get_input()/wait_for_retry()가 Stop 요청 시 던지는 StopAgentException
-                # 등, stop_event가 켜진 상태의 예외는 정상 종료로 처리(트레이스백 X).
+                # 중지 요청으로 발생한 예외는 정상 종료로 처리한다.
                 if self._stop_requested():
                     self.log("Stop 요청 감지 — 종료합니다.")
                     break

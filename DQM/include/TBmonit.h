@@ -22,7 +22,6 @@ public:
   void LoopLive();
   void LoopAfterRun();
 
-  // void LoopFast(); //FIXME!! Fast engine should be integrated into TBplotengine, and work using template!!
 
   void SetMaxEvent(int fMaxEvent_) { fMaxEvent = fMaxEvent_; }
   void SetMaxFile(int fMaxFile_) { fMaxFile = fMaxFile_; }
@@ -49,14 +48,9 @@ private:
   bool fDraw;
   bool fAuxPlotting;
   bool fAuxCut;
-  // AUXcut mode: "WC" (default — WC beam-spot cut only) or "WCHodo"
-  // (additionally applies the WC↔hodoscope inclination cut). Set via
-  // --AUXCutMode and forwarded to TBaux::SetAUXCutMode().
+  // AUX cut 범위: WC 또는 WCHodo.
   std::string fAuxCutMode;
-  // AUX scope: which subsystems to plot when --AUX is on. One of
-  // "WC", "Hodo", "WCHodo" (default WCHodo for legacy behavior).
-  // Set via --AUXMode and forwarded to TBaux::SetAUXMode() before
-  // init() so TBaux can skip loading the unused subsystem's MIDs.
+  // AUX 플롯 대상: WC, Hodo 또는 WCHodo.
   std::string fAuxMode;
 };
 

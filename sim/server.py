@@ -12,7 +12,7 @@ from sim.agent_runner import AgentRunnerSim
 from sim.tool_simulator import get_simulator
 from web import server as _server
 
-# 실제 하드웨어 runner → sim runner 교체 (startup 이벤트 전에 수행)
+# 시작 전에 실제 장비 실행기를 시뮬레이션 실행기로 바꾼다.
 _server.runner = AgentRunnerSim()
 
 
@@ -52,7 +52,7 @@ def _update_run_log_sim(run_number: int, column: str, value: str,
     io.send_status("대기 중")
 
 
-# websocket 핸들러 내부의 direct tool 호출을 sim 버전으로 패치
+# WebSocket의 직접 도구 호출을 시뮬레이션으로 바꾼다.
 _server._run_direct_tool = _run_direct_tool_sim
 _server._update_run_log = _update_run_log_sim
 

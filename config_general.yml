@@ -8,8 +8,7 @@ Motor:
   EZSBinary: /Users/yhep/AI/base/EZSmotor/azd_kren
   UnitScale: 1.0
 
-# DQM freeform "EXECUTE ./monit" / "Kill All ./monit" 버튼 비밀번호 게이트.
-# 웹 UI가 브라우저 탭 세션당 한 번 물어보고 서버가 이 문자열과 대조한다.
+# DQM 실행·종료 작업의 웹 UI 비밀번호.
 dqm_action_password: "rhk315"
 
 BaseDirectory: "/Volumes/yhep/scratch/YUdaq"
@@ -34,6 +33,9 @@ Paths:
 # ===== Run Log 기본값 =====
 RunLog:
   BeamType: "e-"
+
+  # 실행 로그에서 DRC HV 차이를 계산할 읽기 전용 기준 파일.
+  FixedHvFile: "fixed_hv.txt"
 
 # ===== Mac Studio SSH (LAN connection) =====
 StudioSSH:
@@ -75,69 +77,29 @@ AUX:
     POSCUT: 5           # Optional |x|,|y| cut in mm
 
   Hodoscope:
-    # Reference point in raw fiber coordinates (X_ref, Y_ref in fiber units,
-    # 0..16) where the beam-center actually falls. The center-corrected
-    # hodoscope plot shifts this point onto the nominal hodoscope center
-    # (8, 8). Default [8, 8] means "no correction" (corrected == raw).
-    # Update this after a calibration run, just like AUX.WC.CENTER.
+    # 원시 섬유 좌표의 빔 중심. 기본값 [8, 8]은 보정하지 않는다.
     CENTER: [8, 8]
-    # Which brightest-fiber metric to feed into the WC<->Hodo inclination cut
-    # (--AUXCutMode WCHodo). Both metrics are always *displayed* in the AUX
-    # plots; this only selects which one decides whether an event passes
-    # IsPassing(). Accepted: IntADC | PeakADC. Default: IntADC.
+    # WCHodo 기울기 컷에 사용할 위치 방식: IntADC 또는 PeakADC.
     CUT_METHOD: IntADC
 
-    # Per-channel normalization constants (mean of each channel's distribution
-    # from a calibration run). Produced by normalize_hodo.cc.
-    # Usage: calibrated[ch] = raw[ch] / norm_const[ch]
-    # After normalization every channel's distribution is centered near 1.0,
-    # so the brightest-fiber search picks the geometrically-correct fiber
-    # rather than the highest-gain one.
-    # Set all to 1.0 to disable normalization (= raw, no-op).
-    # IntADC normalization constants (from IntADC distribution means)
+    # normalize_hodo가 만든 채널별 IntADC 정규화 상수. 1.0은 보정하지 않는다.
     NORM_CONST_INTADC:
       HX: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
       HY: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
-    # PeakADC normalization constants (from PeakADC distribution means)
+    # 채널별 PeakADC 정규화 상수. 1.0은 보정하지 않는다.
     NORM_CONST_PEAKADC:
       HX: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
       HY: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
 
-  # ===== Beam-inclination cut =============================================
-  # Only active when --AUXcut is on AND --AUXCutMode WCHodo is selected.
-  # On top of the WC POSCUT, rejects events whose (center-corrected) WC and
-  # hodoscope beam-spot positions disagree by more than these limits, in mm:
-  #     |x_WC_corrected - x_Hodo_corrected| < INCLINATION_CUT[0]
-  #     |y_WC_corrected - y_Hodo_corrected| < INCLINATION_CUT[1]
-  # This removes inclined / off-axis beam events that would still pass the
-  # WC POSCUT alone (e.g. a particle that grazes the WC center but enters
-  # the hodoscope a few mm away - it would miss our detector's front face
-  # center). Hodoscope position is taken from the IntADC brightest fiber.
+  # WCHodo 모드에서 허용할 WC·호도스코프 X/Y 위치 차이(mm).
   INCLINATION_CUT: [4, 4]
 
-# ===== Pedestal averaging window (per channel name) ========================
-# Number of waveform bins (counted from bin 1) used to compute the per-event
-# pedestal in Get{Int,Peak}ADC. Read by both TBplotengine (main detector)
-# and TBaux (WC + Hodoscope) via TBpedConfig::Load.
-#
-# Lookup order (highest priority wins):
-#   1. ByName[name]                  - exact channel-name override
-#   2. ByPrefix[prefix]              - matches if name starts with `prefix`
-#                                      AND the next character is a digit
-#                                      (so "S" hits S1..S64 but not "SiPM")
-#   3. Default                       - fallback for everything else
-#
-# To turn this off entirely, remove the section or set every entry's
-# value to 100; the C++ side then preserves the legacy 100-bin window
-# (which is also the compile-time default if PedestalBins is missing).
+# 채널별 pedestal 평균 구간. 우선순위는 이름, 접두사, 기본값 순이다.
 PedestalBins:
   Default: 100
   ByPrefix:
     S: 50    # MCP scintillator single channels (S1..S64)
     C: 50    # MCP cerenkov single channels    (C1..C64)
-  # ByName:
-  #   T1-C: 80     # uncomment to override a specific module channel
-  #   WCX:   80    # or a wire-chamber channel
 
 ModuleConfig:
   Trg1: [80, 230]

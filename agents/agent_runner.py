@@ -8,7 +8,7 @@ from typing import Optional
 
 from agents.io_handler import WebSocketIO
 
-# 타워 지그재그 스캔 순서 — 모든 agent에서 이 상수를 참조
+# 모든 에이전트가 공유하는 지그재그 타워 순서.
 TOWER_ORDER = ["T1", "T2", "T3", "T6", "T5", "T4", "T7", "T8", "T9"]
 
 
@@ -33,7 +33,7 @@ def set_shared_state_ref(agent_state: dict):
     shared_state.clear()
     shared_state.update(agent_state)
     shared_state.update(preserved)
-    # Keep a back-reference so periodic sync can refresh
+    # 주기적 동기화에 사용할 상태 참조.
     shared_state["_agent_state_ref"] = agent_state
 
 
@@ -54,6 +54,93 @@ def clear_shared_state():
     shared_state.clear()
 
 
+# 에이전트 시작 전 실행 매개변수를 입력받는다.
+# "종료" 또는 "exit" 입력은 취소를 뜻한다.
+
+def ask_float(io, prompt: str) -> Optional[float]:
+    while True:
+        io.send_ai_message(prompt)
+        val = io.get_input()
+        if val in ("종료", "exit"):
+            return None
+        try:
+            return float(val.strip())
+        except ValueError:
+            io.send_ai_message("⚠️ 숫자를 입력해주세요.")
+
+
+def ask_int(io, prompt: str) -> Optional[int]:
+    v = ask_float(io, prompt)
+    return int(v) if v is not None else None
+
+
+def ask_choice(io, prompt: str, options) -> Optional[str]:
+    opts_lower = {o.lower(): o for o in options}
+    while True:
+        io.send_ai_message(prompt)
+        val = io.get_input()
+        if val in ("종료", "exit"):
+            return None
+        key = val.strip().lower()
+        if key in opts_lower:
+            return opts_lower[key]
+        io.send_ai_message(f"⚠️ {' / '.join(options)} 중 하나를 입력해주세요.")
+
+
+class AgentFactory:
+    """실제 장비용 에이전트와 HV 제어 접점을 제공한다."""
+
+    tag = ""  # 시뮬레이션 메시지에 붙일 접두사.
+
+    def energy_agent(self):
+        from agents.energy_scan_agent import EnergyScanAgent
+        return EnergyScanAgent
+
+    def calib_agent(self):
+        from agents.calib_scan_agent import CalibScanAgent
+        return CalibScanAgent
+
+    def hv_agent(self, agent_name: str):
+        if agent_name == "hv_equalization_sim":
+            from agents.hv_equalization_sim_agent import HVEqualizationSimAgent
+            return HVEqualizationSimAgent
+        from agents.hv_equalization_agent import HVEqualizationAgent
+        return HVEqualizationAgent
+
+    def position_agent(self, agent_name: str):
+        if agent_name == "position_scan_sim":
+            from agents.position_scan_sim_agent import PositionScanSimADCAgent
+            return PositionScanSimADCAgent
+        from agents.position_scan_agent import PositionScanAgent
+        return PositionScanAgent
+
+    def hv_start(self, io, target_adc, tower):
+        """HV equalization 세션 시작 (실제 tool)."""
+        from tools.hv_equalization_tool import hv_equalization_start
+        if hasattr(hv_equalization_start, "invoke"):
+            result = hv_equalization_start.invoke({
+                "target_c": target_adc, "target_s": target_adc, "tower": tower,
+            })
+        else:
+            result = hv_equalization_start(
+                target_c=target_adc, target_s=target_adc, tower=tower,
+            )
+        io.send_tool_output(result)
+
+    def finalize_hv(self, io):
+        """모든 타워 완료 후 fixed_hv.txt 기록 (실제)."""
+        io.send_ai_message("모든 타워 HV Equalization이 완료되었습니다.")
+        try:
+            from tools.hv_equalization_tool import write_fixed_hv
+            write_fixed_hv()
+            io.send_status("✅ fixed_hv.txt 업데이트 완료")
+        except Exception as _fhv_err:
+            io.send_status(f"⚠️ fixed_hv.txt 업데이트 실패: {_fhv_err}")
+
+
+_DEFAULT_FACTORY = AgentFactory()
+
+
 def run_agent_thread(
     agent_name: str,
     params: dict,
@@ -61,21 +148,21 @@ def run_agent_thread(
     output_queue: queue.Queue,
     stop_event: threading.Event,
     waiting_flag: threading.Event = None,
+    factory: "AgentFactory" = None,
 ):
     io = WebSocketIO(input_queue, output_queue, stop_event, waiting_flag=waiting_flag)
+    factory = factory or _DEFAULT_FACTORY
 
     try:
-        io.send_status(f"{agent_name} 에이전트 실행 중")
-        # _output_queue is consumed by DAQRunTool to push DQM live events
-        # back to the browser without taking io_handler as a dependency.
+        io.send_status(f"{factory.tag}{agent_name} 에이전트 실행 중")
+        # DAQ 도구가 이 큐를 통해 DQM 실시간 이벤트를 전송한다.
         update_shared_state({"agent_type": agent_name, "_output_queue": output_queue})
 
         if agent_name == "em_scan":
-            from agents.energy_scan_agent import EnergyScanAgent
             _em_kwargs = {}
             if params.get("tower"):
                 _em_kwargs["tower"] = params["tower"]
-            agent = EnergyScanAgent(
+            agent = factory.energy_agent()(
                 energy_config={},
                 use_base_model=params.get("use_base_model", False),
                 io_handler=io,
@@ -83,39 +170,22 @@ def run_agent_thread(
             )
 
         elif agent_name == "calib_scan":
-            from agents.calib_scan_agent import CalibScanAgent
-            agent = CalibScanAgent(
+            agent = factory.calib_agent()(
                 tower_order=params.get("tower_order") or TOWER_ORDER,
                 use_base_model=params.get("use_base_model", False),
                 io_handler=io,
             )
 
         elif agent_name in ("hv_equalization", "hv_equalization_sim"):
-            _HV_TOWER_ORDER = params.get("tower_order") or TOWER_ORDER  # 기본: T1-T9 전체 순회
-            _is_sim = (agent_name == "hv_equalization_sim")
+            _HV_TOWER_ORDER = params.get("tower_order") or TOWER_ORDER  # 기본값은 T1~T9 전체이다.
 
-            def _ask_float(prompt):
-                while True:
-                    io.send_ai_message(prompt)
-                    val = io.get_input()
-                    if val in ("종료", "exit"):
-                        return None
-                    try:
-                        return float(val.strip())
-                    except ValueError:
-                        io.send_ai_message("⚠️ 숫자를 입력해주세요.")
-
-            def _ask_int(prompt):
-                v = _ask_float(prompt)
-                return int(v) if v is not None else None
-
-            beam_energy = _ask_float("빔 에너지 (GeV)를 입력해주세요.")
+            beam_energy = ask_float(io, "빔 에너지 (GeV)를 입력해주세요.")
             if beam_energy is None:
                 output_queue.put({"type": "agent_done"}); return
-            target_events = _ask_int(f"이벤트 수를 입력해주세요.")
+            target_events = ask_int(io, "이벤트 수를 입력해주세요.")
             if target_events is None:
                 output_queue.put({"type": "agent_done"}); return
-            target_adc = _ask_float("목표 peakADC 값을 입력해주세요.")
+            target_adc = ask_float(io, "목표 peakADC 값을 입력해주세요.")
             if target_adc is None:
                 output_queue.put({"type": "agent_done"}); return
 
@@ -123,27 +193,14 @@ def run_agent_thread(
                 "current_energy": beam_energy,
             })
 
-            from tools.hv_equalization_tool import hv_equalization_start
-            result = hv_equalization_start.invoke({
-                "target_c": target_adc, "target_s": target_adc,
-                "tower": _HV_TOWER_ORDER[0],
-            }) if hasattr(hv_equalization_start, "invoke") else hv_equalization_start(
-                target_c=target_adc, target_s=target_adc, tower=_HV_TOWER_ORDER[0]
-            )
-            io.send_tool_output(result)
+            factory.hv_start(io, target_adc, _HV_TOWER_ORDER[0])
 
-            AgentClass = None
-            if _is_sim:
-                from agents.hv_equalization_sim_agent import HVEqualizationSimAgent
-                AgentClass = HVEqualizationSimAgent
-            else:
-                from agents.hv_equalization_agent import HVEqualizationAgent
-                AgentClass = HVEqualizationAgent
+            AgentClass = factory.hv_agent(agent_name)
 
             for i, tower in enumerate(_HV_TOWER_ORDER):
                 if stop_event.is_set():
                     break
-                io.send_status(f"[{i + 1}/{len(_HV_TOWER_ORDER)}] {tower} 타워 시작")
+                io.send_status(f"{factory.tag}[{i + 1}/{len(_HV_TOWER_ORDER)}] {tower} 타워 시작")
                 update_shared_state({"current_tower": tower, "agent_type": agent_name})
                 tower_agent = AgentClass(
                     tower=tower,
@@ -164,100 +221,62 @@ def run_agent_thread(
                 with tower_agent:
                     tower_agent.run()
                 _hv_sync_stop.set()
-                io.send_status(f"✅ {tower} 완료")
+                io.send_status(f"✅ {factory.tag}{tower} 완료")
 
             if not stop_event.is_set():
-                io.send_ai_message("모든 타워 HV Equalization이 완료되었습니다.")
-                try:
-                    from hv_equalization_scan import _write_fixed_hv
-                    _write_fixed_hv()
-                    io.send_status("✅ fixed_hv.txt 업데이트 완료")
-                except Exception as _fhv_err:
-                    io.send_status(f"⚠️ fixed_hv.txt 업데이트 실패: {_fhv_err}")
+                factory.finalize_hv(io)
             io.send_status("모델 언로드 중...")
             clear_shared_state()
             output_queue.put({"type": "agent_done"})
             return
 
         elif agent_name in ("position_scan", "position_scan_sim"):
-            _is_sim = (agent_name == "position_scan_sim")
             center_tower = params.get("tower") or (params.get("tower_order") or TOWER_ORDER)[0]
 
-            def _ask_float(prompt):
-                while True:
-                    io.send_ai_message(prompt)
-                    val = io.get_input()
-                    if val in ("종료", "exit"):
-                        return None
-                    try:
-                        return float(val.strip())
-                    except ValueError:
-                        io.send_ai_message("⚠️ 숫자를 입력해주세요.")
-
-            def _ask_int(prompt):
-                v = _ask_float(prompt)
-                return int(v) if v is not None else None
-
-            def _ask_choice(prompt, options):
-                opts_lower = {o.lower(): o for o in options}
-                while True:
-                    io.send_ai_message(prompt)
-                    val = io.get_input()
-                    if val in ("종료", "exit"):
-                        return None
-                    key = val.strip().lower()
-                    if key in opts_lower:
-                        return opts_lower[key]
-                    io.send_ai_message(f"⚠️ {' / '.join(options)} 중 하나를 입력해주세요.")
-
-            # 방향/채널은 프론트 버튼(params)에서 옴. 없으면 채팅으로 질문(하위호환).
+            # 방향과 채널이 없으면 대화로 입력받는다.
             direction = (params.get("direction") or "").lower()
             if direction not in ("horizontal", "vertical", "both"):
-                direction = _ask_choice(
+                direction = ask_choice(
+                    io,
                     "스캔 방향을 선택해주세요. (horizontal / vertical / both)",
                     ["horizontal", "vertical", "both"])
                 if direction is None:
                     output_queue.put({"type": "agent_done"}); return
             channel = (params.get("channel") or "").upper()
             if channel not in ("C", "S"):
-                channel = _ask_choice("어떤 peakADC를 볼까요? (C / S)", ["C", "S"])
+                channel = ask_choice(io, "어떤 peakADC를 볼까요? (C / S)", ["C", "S"])
                 if channel is None:
                     output_queue.put({"type": "agent_done"}); return
 
-            # 나머지 수치 입력은 한 번만 받아 두 방향(both)에서 공유한다.
-            beam_energy = _ask_float("빔 에너지 (GeV)를 입력해주세요.")
+            # 수치 입력은 양방향 스캔에서 공유한다.
+            beam_energy = ask_float(io, "빔 에너지 (GeV)를 입력해주세요.")
             if beam_energy is None:
                 output_queue.put({"type": "agent_done"}); return
-            target_events = _ask_int("이벤트 수를 입력해주세요.")
+            target_events = ask_int(io, "이벤트 수를 입력해주세요.")
             if target_events is None:
                 output_queue.put({"type": "agent_done"}); return
-            est_x = _ask_float("estimated center X 좌표 (mm)를 입력해주세요.")
+            est_x = ask_float(io, "estimated center X 좌표 (mm)를 입력해주세요.")
             if est_x is None:
                 output_queue.put({"type": "agent_done"}); return
-            est_y = _ask_float("estimated center Y 좌표 (mm)를 입력해주세요.")
+            est_y = ask_float(io, "estimated center Y 좌표 (mm)를 입력해주세요.")
             if est_y is None:
                 output_queue.put({"type": "agent_done"}); return
-            interval = _ask_float("이동 간격 (mm)을 입력해주세요.")
+            interval = ask_float(io, "이동 간격 (mm)을 입력해주세요.")
             if interval is None:
                 output_queue.put({"type": "agent_done"}); return
 
             update_shared_state({"current_tower": center_tower, "current_energy": beam_energy})
 
-            if _is_sim:
-                # Sim-ADC: daq/motor 등은 실제로 돌리고 peakADC 측정만 시뮬레이션.
-                # (모든 걸 mock하는 완전 sim은 run_web_sim.py → sim.agent_runner 경로.)
-                from agents.position_scan_sim_agent import PositionScanSimADCAgent as _PSAgent
-            else:
-                from agents.position_scan_agent import PositionScanAgent as _PSAgent
+            _PSAgent = factory.position_agent(agent_name)
 
-            # both → horizontal 먼저 완료·언로드 후 vertical 재로드 (초기 입력은 재질문 안 함).
+            # 양방향 스캔은 수평 완료 후 수직 에이전트를 실행한다.
             directions = ["horizontal", "vertical"] if direction == "both" else [direction]
             for _di, _dir in enumerate(directions):
                 if stop_event.is_set():
                     break
                 if len(directions) > 1:
                     io.send_ai_message(
-                        f"[{_di + 1}/{len(directions)}] {_dir} 방향 스캔을 시작합니다. 모델을 로드합니다...")
+                        f"{factory.tag}[{_di + 1}/{len(directions)}] {_dir} 방향 스캔을 시작합니다. 모델을 로드합니다...")
                 update_shared_state({"agent_type": agent_name, "current_tower": center_tower})
                 agent = _PSAgent(
                     center_tower=center_tower,
@@ -287,7 +306,7 @@ def run_agent_thread(
                     io.send_status("모델 언로드 중...")
 
             if not stop_event.is_set():
-                io.send_ai_message("✅ 모든 Position Scan이 완료되었습니다.")
+                io.send_ai_message(f"{factory.tag}✅ 모든 Position Scan이 완료되었습니다.")
             io.send_status("모델 언로드 중...")
             clear_shared_state()
             output_queue.put({"type": "agent_done"})
@@ -332,6 +351,9 @@ class StopAgentException(Exception):
 
 
 class AgentRunner:
+
+    # 시뮬레이션에서는 SimFactory로 교체한다.
+    factory: AgentFactory = _DEFAULT_FACTORY
 
     def __init__(self):
         self.thread: Optional[threading.Thread] = None
@@ -413,7 +435,7 @@ class AgentRunner:
         self.thread = threading.Thread(
             target=run_agent_thread,
             args=(agent_name, params, self.input_queue, self.output_queue,
-                  self.stop_event, self.waiting_flag),
+                  self.stop_event, self.waiting_flag, self.factory),
             daemon=True,
         )
         self.thread.start()
@@ -422,10 +444,11 @@ class AgentRunner:
         self.input_queue.put(text)
 
     def stop(self):
+        # Kill Run과 동일하게 원격 DAQ 디렉터리에 KILLME 생성 (안 돌고 있으면 무해).
         try:
-            from tools.daq_tool import KILLME_FILE
-            from pathlib import Path
-            Path(KILLME_FILE).touch()
+            from tools.daq_tool import WORKDIR
+            from tools.ssh_utils import run_studio_ssh
+            run_studio_ssh(f"touch {WORKDIR}/KILLME", timeout=10, check=True)
         except Exception:
             pass
         self.stop_event.set()

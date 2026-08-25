@@ -1,16 +1,5 @@
 #!/usr/bin/env python3
-"""Sim agent 공통부 — 세 시나리오 sim agent(calib/energy/hv)가 공유하는 tool 실행 로직.
-
-원칙: agent마다 흐름은 조금씩 달라도 DAQ를 돌리는 방식은 동일하다.
-  params를 state 기준으로 확정(override) → 확정된 params로 tool-call 표시 →
-  sim DAQ 실행 → run number 추출 → plot 확인 대기 플래그.
-이 공통부를 한 곳에서 통제한다. agent별로 다른 것(어느 타워/에너지에 run을 기록할지 등
-부킹)은 호출부에서 처리한다.
-
-중요: 우측 패널의 "[SIM TOOL CALL]" params 표시는 반드시 _apply_daq_params_from_state로
-override한 "뒤에" 찍어야 실제 실행 위치/에너지와 일치한다. LLM 원본 params는 무시되므로
-override 전에 찍으면 표시값과 실제 실행값이 어긋난다.
-"""
+"""Simulation Agent가 공유하는 도구 호출과 DAQ 실행 로직."""
 
 from typing import Any, Dict, Optional, Tuple
 
@@ -31,6 +20,8 @@ class SimExecMixin:
         beam_energy: Any,
         program: str,
         pos: Optional[Dict[str, float]] = None,
+        pos_rot: float = 0.0,
+        pos_tilt: float = 0.0,
         daq_config: Optional[str] = None,
     ) -> Tuple[str, Optional[int]]:
         """DAQ 공통 실행: params override → 표시 → 실행 → run# 추출 → plot 대기.
@@ -41,12 +32,14 @@ class SimExecMixin:
             beam_energy=beam_energy,
             program=program,
             pos=pos,
+            pos_rot=pos_rot,
+            pos_tilt=pos_tilt,
             config=daq_config,
         )
-        # override 후 출력 — 표시 params가 실제 실행값과 일치.
+        # 확정된 시뮬레이션 매개변수를 표시한다.
         self._sim_emit_tool_call("daq_run_tool", params)
         result = self._sim.daq_run(params, line_callback=self.io.send_tool_output)
         run_number = self._extract_run_number(result)
-        # 사용자 plot 확인 전까지 completed=True 차단 (실제 agent와 동일 부킹)
+        # 플롯 확인 전에는 완료 상태 변경을 막는다.
         self.state["needs_plot_confirm"] = True
         return result, run_number

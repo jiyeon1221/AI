@@ -26,8 +26,8 @@
 
 TBsingleWaveform::TBsingleWaveform(ObjectCollection* fObj) {
   // Config file path: prefer --Config <path> from the CLI; fall back to
-  // the legacy hard-coded autoTB location.
-  std::string config_path = "/Users/yhep/autoTB/config_general.yml";
+  // the hard-coded project location.
+  std::string config_path = "/Users/yhep/AI/base/config_general.yml";
   std::string config_arg;
   fObj->GetVariable("Config", &config_arg);
   if (!config_arg.empty() && config_arg != "null")
@@ -63,10 +63,7 @@ TBsingleWaveform::TBsingleWaveform(ObjectCollection* fObj) {
 
   if (fSkipEvent == -1) fSkipEvent = 0;
 
-  // Create waveforms directory if it doesn't exist
-  gSystem->mkdir("./output/waveforms", kTRUE);
-  
-  fOutputName = (TString)Form("./output/waveforms/Run%d_SingleWaveform", fRunNum);
+  fOutputName = (TString)Form("./output/Run%d_SingleWaveform.gif", fRunNum);
 
   init();
 }
@@ -146,7 +143,6 @@ void TBsingleWaveform::Loop() {
   
   ANSI_CODE ANSI = ANSI_CODE();
 
-  std::vector<std::string> fOutputFiles;
   std::vector<int> tUniqueMID = GetUniqueMID();
   TBread<TBwaveform> readerWave = TBread<TBwaveform>(fRunNum, fSkipEvent + fMaxEvent, 1, false, fBaseDir, tUniqueMID);
 
@@ -196,35 +192,13 @@ void TBsingleWaveform::Loop() {
     }
     fLeg->Draw();
     fCanvas->Update();
-    
-    // Save each event as individual PNG file
-    TString pngFileName = Form("%s_evt%d.png", fOutputName.Data(), currentEvent);
-    fCanvas->SaveAs(pngFileName);
-    fOutputFiles.push_back(pngFileName.Data());
+    fCanvas->Print(fOutputName + "+");
 
     for (int iCh = 0; iCh < fHistWaveform.size(); iCh++)
       fHistWaveform.at(iCh)->Reset("ICES");
   }
 
-  // Save file list as JSON for web UI in output root directory
-  TString jsonFileName = Form("./output/Run%d_SingleWaveform.json", fRunNum);
-  std::ofstream jsonFile(jsonFileName.Data());
-  jsonFile << "{\"files\":[";
-  for (size_t i = 0; i < fOutputFiles.size(); i++) {
-    // Store relative paths from output directory
-    std::string relativePath = fOutputFiles[i];
-    size_t pos = relativePath.find("./output/");
-    if (pos != std::string::npos) {
-      relativePath = relativePath.substr(pos + 9); // Remove "./output/" prefix
-    }
-    jsonFile << "\"" << relativePath << "\"";
-    if (i < fOutputFiles.size() - 1) jsonFile << ",";
-  }
-  jsonFile << "],\"total\":" << fOutputFiles.size() << "}";
-  jsonFile.close();
-  
-  std::cout << "\n✅ Generated " << fOutputFiles.size() << " PNG files in ./output/waveforms/" << std::endl;
-  std::cout << "📄 File list saved to " << jsonFileName.Data() << std::endl;
+  fCanvas->Print(fOutputName + "++");
 }
 
 void TBsingleWaveform::SetMaximum() {

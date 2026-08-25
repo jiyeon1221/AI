@@ -1,16 +1,5 @@
 #!/usr/bin/env python3
-"""
-IO Handler
-----------
-Abstraction layer so agent code stays independent of the execution environment.
-
-IOHandler (ABC)
-  ├─ TerminalIO   : Local terminal. Uses print/input directly.
-  └─ WebSocketIO  : Web UI. Pushes typed dicts to output_queue;
-                    reads input from input_queue (0.2 s poll, stop_event aware).
-                    Emits awaiting_input when the last message requires a physical
-                    action (e.g. "이동해주세요") → frontend shows the 완료 button.
-"""
+"""Agent 입출력을 터미널과 WebSocket 환경에 맞게 연결한다."""
 
 import queue
 import threading
@@ -27,12 +16,7 @@ class IOHandler(ABC):
 
     @abstractmethod
     def send_ai_message(self, message: str, requires_confirm: bool = False):
-        """Send AI conversation message → left panel.
-
-        requires_confirm=True forces the 완료 button to appear regardless of
-        whether the message contains a trigger keyword. Used when the message
-        is purely informational but still needs explicit user confirmation
-        (e.g. parsed-config summary)."""
+        """AI 메시지를 보내고 필요하면 완료 확인을 요청한다."""
         pass
 
     @abstractmethod
@@ -90,18 +74,16 @@ class TerminalIO(IOHandler):
 class WebSocketIO(IOHandler):
     """WebSocket-backed I/O for the web UI."""
 
-    # Messages containing these keywords require a physical action from the
-    # operator → show the 완료 button.
-    # Everything else (value requests) just needs typed input → no button.
+    # 물리 작업이 필요한 메시지에는 완료 버튼을 표시한다.
     _CONFIRM_KEYWORDS = [
-        "이동해주세요",       # move stage / tower
-        "설정해주세요",       # set beam energy
-        "확인해주세요",       # check results
-        "다음 DAQ를 시작합니다",  # ready for next DAQ
-        "전압이 변경되었습니다",  # HV voltage changed
+        "이동해주세요",       # 스테이지 또는 타워 이동.
+        "설정해주세요",       # 빔 에너지 설정.
+        "확인해주세요",       # 결과 확인.
+        "다음 DAQ를 시작합니다",  # 다음 DAQ 준비.
+        "전압이 변경되었습니다",  # HV 변경 확인.
     ]
 
-    # HV approval prompt → shows 완료 + 수정 buttons (modify allowed)
+    # HV 승인 메시지에는 완료와 수정 버튼을 표시한다.
     _HV_CONFIRM_KEYWORDS = [
         "적용하시겠습니까",
     ]
@@ -112,9 +94,9 @@ class WebSocketIO(IOHandler):
         self.input_queue = input_queue
         self.output_queue = output_queue
         self.stop_event = stop_event
-        self.waiting_flag = waiting_flag      # set while blocked on get_input()
-        self._last_needs_confirm = False   # set by send_ai_message
-        self._last_needs_hv_confirm = False   # HV approval → 완료+수정 buttons
+        self.waiting_flag = waiting_flag      # 입력 대기 상태.
+        self._last_needs_confirm = False      # 일반 완료 버튼 표시 여부.
+        self._last_needs_hv_confirm = False   # HV 승인 버튼 표시 여부.
 
     def send_ai_message(self, message: str, requires_confirm: bool = False):
         self._last_needs_hv_confirm = any(kw in message for kw in self._HV_CONFIRM_KEYWORDS)
@@ -126,18 +108,18 @@ class WebSocketIO(IOHandler):
 
     def get_input(self) -> str:
         from agents.agent_runner import StopAgentException
-        # HV approval → show 완료 + 수정 buttons; other physical actions → 완료 only
+        # HV 승인은 완료와 수정, 일반 작업은 완료 버튼만 사용한다.
         if self._last_needs_hv_confirm:
             self.output_queue.put({"type": "awaiting_hv_confirm"})
         elif self._last_needs_confirm:
             self.output_queue.put({"type": "awaiting_input"})
-        self._last_needs_confirm = False   # reset for next call
+        self._last_needs_confirm = False   # 다음 입력을 위해 초기화한다.
         self._last_needs_hv_confirm = False
-        # Signal that the scenario agent is blocked waiting for user input
+        # 시나리오 에이전트의 입력 대기 상태를 알린다.
         if self.waiting_flag is not None:
             self.waiting_flag.set()
         try:
-            # Poll so we can react to stop_event even while blocked
+            # 입력 대기 중에도 중지 요청을 확인한다.
             while True:
                 if self.stop_event and self.stop_event.is_set():
                     raise StopAgentException()
@@ -156,7 +138,7 @@ class WebSocketIO(IOHandler):
 
     def send_plots(self, file_paths: List[str]):
         for path in file_paths:
-            # Send just the filename; server serves /plots/<filename>
+            # 서버가 제공할 플롯 파일명만 전송한다.
             self.output_queue.put({"type": "plot", "filename": Path(path).name})
 
     def send_status(self, text: str):

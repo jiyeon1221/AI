@@ -7,100 +7,109 @@
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
   html, body { height: 100%; font-family: 'Segoe UI', system-ui, sans-serif;
-               background: #0f1117; color: #dde1f0; }
+               background: #f3f5f8; color: #1f2937; }
   body { display: flex; flex-direction: column; }
 
   /* ── Top bar ── */
   #top {
     display: flex; align-items: center; justify-content: space-between;
-    padding: 10px 14px; border-bottom: 1px solid #2c2f3e; background: #1a1d27;
+    padding: 12px 18px; border-bottom: 1px solid #d8dee8; background: #ffffff;
+    box-shadow: 0 1px 4px rgba(15, 23, 42, .06);
     flex-shrink: 0;
   }
   #top-left { display: flex; align-items: center; gap: 10px; }
-  #top-left img { height: 22px; }
-  #top-title { font-size: 14px; font-weight: 600; color: #4f8ef7; }
-  #top-right { display: flex; align-items: center; gap: 8px; }
-  #timestamp { font-size: 11px; color: #7a7f99; min-width: 170px; text-align: right; }
+  #top-left img { height: 26px; }
+  #top-title { font-size: 17px; font-weight: 700; color: #1d4ed8; }
+  #top-right { display: flex; align-items: center; justify-content: flex-end; gap: 9px; flex-wrap: wrap; }
+  #live-status {
+    display: inline-flex; align-items: center; gap: 7px; padding: 6px 10px;
+    border: 1px solid #bbf7d0; border-radius: 999px; background: #f0fdf4;
+    color: #166534; font-size: 13px; font-weight: 700; white-space: nowrap;
+  }
+  #live-dot { width: 8px; height: 8px; border-radius: 50%; background: #22c55e; box-shadow: 0 0 0 3px #dcfce7; }
+  #live-status.error { color: #b91c1c; border-color: #fecaca; background: #fef2f2; }
+  #live-status.error #live-dot { background: #ef4444; box-shadow: 0 0 0 3px #fee2e2; }
+  #timestamp { font-size: 13px; color: #64748b; min-width: 190px; text-align: right; }
 
   button {
-    background: #23273a; color: #dde1f0;
-    border: 1px solid #3a4159; border-radius: 4px;
-    padding: 5px 11px; font-size: 12px; cursor: pointer;
+    background: #ffffff; color: #334155;
+    border: 1px solid #cbd5e1; border-radius: 6px;
+    padding: 7px 12px; font-size: 14px; font-weight: 600; cursor: pointer;
   }
-  button:hover { border-color: #4f8ef7; color: #fff; }
-  button.active { background: #2a3a5e; border-color: #4f8ef7; color: #4f8ef7; }
+  button:hover { border-color: #2563eb; color: #1d4ed8; background: #eff6ff; }
+  button.active { background: #dbeafe; border-color: #3b82f6; color: #1d4ed8; }
 
   /* ── Content area ── */
-  #content { flex: 1; overflow: auto; padding: 12px 14px; }
+  #content { flex: 1; overflow: auto; padding: 16px 18px; }
 
   /* ── Error / loading ── */
-  #msg { font-size: 13px; color: #9ca0b8; padding: 20px 0; }
-  #msg.error { color: #f44336; }
+  #msg { font-size: 14px; color: #64748b; padding: 20px 0; }
+  #msg.error { color: #dc2626; }
 
   /* ── Table view ── */
-  #tbl-wrap { overflow-x: auto; }
+  #tbl-wrap { overflow: auto; border: 1px solid #cbd5e1; border-radius: 8px; background: #ffffff; }
   table {
-    width: 100%; border-collapse: collapse; font-size: 12px;
+    width: 100%; border-collapse: separate; border-spacing: 0; font-size: 14px;
     table-layout: fixed;
   }
-  colgroup .col-ch     { width: 52px; }
-  colgroup .col-name   { width: 90px; }
-  colgroup .col-status { width: 70px; }
-  colgroup .col-exp    { width: 78px; }
-  colgroup .col-num    { width: 78px; }
+  colgroup .col-ch     { width: 72px; }
+  colgroup .col-name   { width: 120px; }
+  colgroup .col-status { width: 92px; }
+  colgroup .col-exp    { width: 100px; }
+  colgroup .col-num    { width: 100px; }
 
   thead th {
-    background: #1a1d27; color: #7a7f99; font-weight: 600;
-    text-transform: uppercase; letter-spacing: 0.4px; font-size: 10px;
-    padding: 7px 10px; text-align: right; border-bottom: 1px solid #2c2f3e;
-    white-space: nowrap;
+    position: sticky; z-index: 3; background: #f8fafc; color: #475569; font-weight: 700;
+    letter-spacing: 0.2px; font-size: 13px; padding: 9px 12px; text-align: right;
+    border-right: 1px solid #e2e8f0; border-bottom: 1px solid #cbd5e1; white-space: nowrap;
   }
-  thead th:nth-child(1), thead th:nth-child(2) { text-align: left; }
-  thead th:nth-child(3) { text-align: center; }
+  thead tr.group-row th { top: 0; text-align: center; padding: 7px 12px; font-size: 12px; color: #64748b; background: #eef2f7; }
+  thead tr.group-row th:nth-child(2),
+  thead tr.group-row th:nth-child(3),
+  thead tr.group-row th:nth-child(4) { border-left: 2px solid #94a3b8; }
+  thead tr.column-row th { top: 32px; }
+  thead tr.column-row th:nth-child(1), thead tr.column-row th:nth-child(2) { text-align: left; }
+  thead tr.column-row th:nth-child(3) { text-align: center; }
+  thead tr.column-row th:nth-child(1) { left: 0; z-index: 5; }
+  thead tr.column-row th:nth-child(2) { left: 72px; z-index: 5; }
 
-  tbody tr { border-bottom: 1px solid #1e2233; }
-  tbody tr:hover { background: #1e2233; }
-  tbody tr.trip-row { background: #2a0f14; }
-  tbody tr.trip-row:hover { background: #35131a; }
+  tbody tr { background: #ffffff; }
+  tbody tr:nth-child(even) { background: #f8fafc; }
+  tbody tr:hover { background: #eff6ff; }
+  tbody tr.trip-row { background: #fff1f2; }
+  tbody tr.trip-row:hover { background: #ffe4e6; }
   tbody td {
-    padding: 6px 10px; font-family: 'SF Mono','Fira Code',monospace;
-    font-size: 12px; text-align: right; white-space: nowrap;
+    height: 42px; padding: 8px 12px; font-family: 'SF Mono','Fira Code',monospace;
+    font-size: 14px; text-align: right; white-space: nowrap;
+    border-right: 1px solid #e2e8f0; border-bottom: 1px solid #e2e8f0;
   }
-  tbody tr.trip-row td { color: #ff8a9a; }
-  tbody td:nth-child(1) { text-align: left; color: #7a7f99; }
-  tbody td:nth-child(2) { text-align: left; color: #dde1f0; font-weight: 600; }
+  tbody tr:last-child td { border-bottom: 0; }
+  tbody tr.trip-row td { color: #be123c; }
+  tbody td:nth-child(1) { position: sticky; left: 0; z-index: 1; text-align: left; color: #64748b; background: inherit; }
+  tbody td:nth-child(2) { position: sticky; left: 72px; z-index: 1; text-align: left; color: #1f2937; font-weight: 700; background: inherit; }
   tbody td:nth-child(3) { text-align: center; }
+  thead th:nth-child(4), thead th:nth-child(6), thead th:nth-child(8),
+  tbody td:nth-child(4), tbody td:nth-child(6), tbody td:nth-child(8) { border-left: 2px solid #94a3b8; }
 
   /* Status badge */
   .badge {
     display: inline-flex; align-items: center; gap: 5px;
-    padding: 2px 8px; border-radius: 3px; font-size: 11px; font-weight: 600;
+    min-width: 64px; justify-content: center; padding: 4px 9px; border-radius: 999px; font-size: 13px; font-weight: 700;
   }
-  .badge-on   { background: #2c2c2c; color: #f2f2f2; }
-  .badge-off  { background: #2a2a2a; color: #ffffff; }
-  .badge-up   { background: #2c2c2c; color: #f1f1f1; }
-  .badge-down { background: #2c2c2c; color: #efefef; }
-  .badge-trip { background: #5a0000; color: #ff1744; }
-  .badge-unk  { background: #1f2235; color: #7a7f99; }
+  .badge-on   { background: #dcfce7; color: #166534; }
+  .badge-off  { background: #e5e7eb; color: #4b5563; }
+  .badge-up   { background: #dbeafe; color: #1d4ed8; }
+  .badge-down { background: #ffedd5; color: #c2410c; }
+  .badge-trip { background: #fee2e2; color: #b91c1c; }
+  .badge-unk  { background: #f1f5f9; color: #64748b; }
   .dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
-  .dot-on   { background: #f2f2f2; }
-  .dot-off  { background: #ffffff; }
-  .dot-up   { background: #f1f1f1; }
-  .dot-down { background: #efefef; }
-  .dot-trip { background: #ff1744; }
-  .dot-unk  { background: #7a7f99; }
+  .dot-on   { background: #22c55e; }
+  .dot-off  { background: #9ca3af; }
+  .dot-up   { background: #3b82f6; }
+  .dot-down { background: #f97316; }
+  .dot-trip { background: #ef4444; }
+  .dot-unk  { background: #94a3b8; }
 
-  /* VMon deviation highlight */
-  .vmon-warn { color: #dde1f0; }
-  .vmon-ok   { color: #dde1f0; }
-
-  /* ── Raw view ── */
-  #raw {
-    font-family: 'SF Mono','Fira Code','Courier New',monospace;
-    font-size: 12px; line-height: 1.5; color: #c5cae9;
-    background: #0a0c14; border-radius: 4px;
-    padding: 12px; white-space: pre-wrap; word-break: break-word;
-  }
   .hidden { display: none; }
 
   /* ── Edit mode ── */
@@ -108,57 +117,49 @@
   tbody td.v0set-cell {
     cursor: pointer; position: relative; outline: none;
   }
-  tbody td.v0set-cell:hover { background: #252840; }
+  tbody td.v0set-cell { background-color: #eff6ff; }
+  tbody td.v0set-cell:hover { background: #dbeafe; }
   tbody td.v0set-cell:focus {
-    background: #1e2850;
-    box-shadow: inset 0 0 0 1px #4f8ef7;
+    background: #dbeafe;
+    box-shadow: inset 0 0 0 2px #2563eb;
   }
   tbody td.v0set-cell::after {
     content: ' ✎'; font-size: 10px; color: #4f8ef780; font-style: normal;
   }
   tbody td.v0set-cell input.inline-edit {
-    width: 72px; background: #1a1d27; color: #fff;
-    border: 1px solid #4f8ef7; border-radius: 3px;
-    padding: 1px 4px; font-size: 12px; font-family: inherit;
+    width: 86px; background: #ffffff; color: #111827;
+    border: 2px solid #2563eb; border-radius: 4px;
+    padding: 3px 5px; font-size: 14px; font-family: inherit;
     text-align: right;
   }
   /* Status cell — clickable for on/off in edit mode */
   tbody td.status-edit { cursor: pointer; outline: none; }
   tbody td.status-edit:hover .badge { opacity: 0.75; }
-  tbody td.status-edit:focus { box-shadow: inset 0 0 0 1px #4f8ef7; }
+  tbody td.status-edit:focus { box-shadow: inset 0 0 0 2px #2563eb; }
 
   /* ── Row keyboard-focus highlight ── */
-  tbody tr:focus-within { background: #1a2240 !important; }
-  tbody tr.trip-row:focus-within { background: #3a1020 !important; }
+  tbody tr:focus-within { background: #dbeafe !important; }
+  tbody tr.trip-row:focus-within { background: #ffe4e6 !important; }
 
-
-  /* ── Confirm modal ── */
-  #modal-overlay {
-    display: none; position: fixed; inset: 0;
-    background: rgba(0,0,0,.6); z-index: 100;
-    align-items: center; justify-content: center;
-  }
-  #modal-overlay.visible { display: flex; }
-  #modal-box {
-    background: #1a1d27; border: 1px solid #4f8ef7; border-radius: 8px;
-    padding: 20px 24px; min-width: 320px; max-width: 480px;
-  }
-  #modal-title { font-size: 14px; font-weight: 600; color: #4f8ef7; margin-bottom: 10px; }
-  #modal-body  { font-size: 12px; color: #9ca0b8; line-height: 1.6; margin-bottom: 16px; white-space: pre-wrap; }
-  #modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
-  #modal-confirm { background: #1e3a6e; border-color: #4f8ef7; color: #4f8ef7; padding: 6px 18px; }
-  #modal-confirm:hover { background: #2a4f9e; color: #fff; }
-  #modal-cancel  { background: #23273a; border-color: #3a4159; color: #7a7f99; padding: 6px 18px; }
 
   /* ── Toast ── */
   #toast {
     display: none; position: fixed; bottom: 20px; right: 20px; z-index: 200;
-    background: #23273a; border: 1px solid #3a4159; border-radius: 6px;
-    padding: 10px 16px; font-size: 12px; color: #dde1f0;
-    box-shadow: 0 4px 16px rgba(0,0,0,.4);
+    background: #ffffff; border: 1px solid #cbd5e1; border-radius: 8px;
+    padding: 11px 16px; font-size: 14px; color: #334155;
+    box-shadow: 0 8px 24px rgba(15,23,42,.16);
   }
-  #toast.ok    { border-color: #4caf50; color: #4caf50; }
-  #toast.error { border-color: #ef5350; color: #ef5350; }
+  #toast.ok    { border-color: #22c55e; color: #166534; }
+  #toast.error { border-color: #ef4444; color: #b91c1c; }
+
+  /* ── Hodoscope card ── */
+  #hodo-card {
+    margin-top: 14px; padding: 14px 16px; max-width: 340px;
+    background: #ffffff; border: 1px solid #cbd5e1; border-radius: 8px;
+    box-shadow: 0 1px 3px rgba(15,23,42,.05); font-size: 14px;
+  }
+  #hodo-title { margin-bottom: 8px; color: #1d4ed8; font-size: 13px; font-weight: 700; }
+  #hodo-val { color: #475569; }
 
   /* ── Trip Alert Banner ── */
   #trip-banner {
@@ -209,10 +210,10 @@
     <span id="top-title">HV Status · All Channels</span>
   </div>
   <div id="top-right">
-    <button id="view-btn">Raw 보기</button>
+    <div id="live-status"><span id="live-dot"></span><span id="live-interval">실시간 · 1초 간격</span></div>
     <button id="expert-btn">전문가모드: 꺼짐</button>
     <button id="refresh-btn">새로고침</button>
-    <button id="auto-btn" class="active">자동 갱신: 2초</button>
+    <button id="auto-btn" class="active">자동 갱신: 1초</button>
     <div id="timestamp">대기 중</div>
   </div>
 </div>
@@ -228,7 +229,13 @@
         <col class="col-exp" /><col class="col-exp" /><col class="col-exp" />
       </colgroup>
       <thead>
-        <tr>
+        <tr class="group-row">
+          <th colspan="3">채널 정보</th>
+          <th colspan="2">현재 측정값</th>
+          <th colspan="2">설정값</th>
+          <th colspan="3" class="expert-col hidden">전문가 설정</th>
+        </tr>
+        <tr class="column-row">
           <th>Ch</th><th>Name</th><th>Status</th>
           <th>VMon (V)</th><th>IMon (uA)</th>
           <th>V0Set (V)</th><th>I0Set (uA)</th>
@@ -240,31 +247,10 @@
       <tbody id="hv-tbody"></tbody>
     </table>
   </div>
-  <pre id="raw" style="display:none"></pre>
-
   <!-- Hodoscope HV card -->
-  <div id="hodo-card" style="
-    margin-top: 14px; padding: 12px 14px;
-    background: #1a1d27; border: 1px solid #2c2f3e; border-radius: 6px;
-    font-size: 12px; max-width: 320px;
-  ">
-    <div style="font-weight:600; color:#4f8ef7; margin-bottom:8px; font-size:11px;
-                text-transform:uppercase; letter-spacing:0.5px;">
-      Hodoscope HV (set file)
-    </div>
-    <div id="hodo-val" style="color:#9ca0b8;">로딩 중...</div>
-  </div>
-</div>
-
-<!-- Confirm modal -->
-<div id="modal-overlay">
-  <div id="modal-box">
-    <div id="modal-title">HV 변경 확인</div>
-    <div id="modal-body"></div>
-    <div id="modal-actions">
-      <button id="modal-cancel">취소</button>
-      <button id="modal-confirm">적용</button>
-    </div>
+  <div id="hodo-card">
+    <div id="hodo-title">Hodoscope HV (set file)</div>
+    <div id="hodo-val">로딩 중...</div>
   </div>
 </div>
 
@@ -275,40 +261,34 @@
 const msgEl      = document.getElementById('msg');
 const tblWrap    = document.getElementById('tbl-wrap');
 const tbody      = document.getElementById('hv-tbody');
-const rawEl      = document.getElementById('raw');
 const tsEl       = document.getElementById('timestamp');
+const liveStatusEl = document.getElementById('live-status');
+const liveIntervalEl = document.getElementById('live-interval');
 const autoBtn    = document.getElementById('auto-btn');
 const expertBtn  = document.getElementById('expert-btn');
 const refreshBtn = document.getElementById('refresh-btn');
-const viewBtn    = document.getElementById('view-btn');
-const modalOverlay = document.getElementById('modal-overlay');
-const modalBody    = document.getElementById('modal-body');
-const modalConfirm = document.getElementById('modal-confirm');
-const modalCancel  = document.getElementById('modal-cancel');
 const toastEl      = document.getElementById('toast');
 
 let timerAuto = null;
-const AUTO_CHOICES = [1000, 2000, 5000]; // 1s / 2s / 5s
-let autoIdx = 0; // default: 1000ms
+const AUTO_CHOICES = [1000, 2000, 5000]; // 자동 갱신 간격.
+let autoIdx = 0; // 기본값은 1초이다.
 let autoMs = AUTO_CHOICES[autoIdx];
-let showRaw = false;
 let lastRaw = '';
 let lastRows = null;
 let expertMode = false;
 const isTrip    = s => s === 'trip' || s.includes('trip');
 const KNOWN_ST  = new Set(['on', 'off', 'up', 'down']);
-// + 기준으로 분리 후 KNOWN_ST 에 없는 부분이 하나라도 있으면 alert
+// 알려지지 않은 상태 항목을 경고 대상으로 분류한다.
 const isAlertSt = s => s.split('+').map(c => c.trim().toLowerCase()).some(c => c !== '' && !KNOWN_ST.has(c));
-// alert 조건만 추출 (KNOWN_ST 제외)
+// 알려진 상태를 제외한 경고 항목만 반환한다.
 const alertParts = s => s.split('+').map(c => c.trim()).filter(c => c !== '' && !KNOWN_ST.has(c.toLowerCase()));
-const editMode = true;   // 항상 편집 가능
-let pendingAction = null;
+const editMode = true;   // 항상 편집할 수 있다.
 
-/* ── Keyboard navigation state ── */
+/* 키보드 탐색 상태. */
 let focusedRowIdx = -1;
-let focusedColKey = 'v0set'; // 'status' | 'v0set' | 'i0set'
+let focusedColKey = 'v0set'; // 현재 선택한 편집 열.
 const COL_TD_IDX = { name: 1, status: 2, v0set: 5, i0set: 6, rup: 7, rdown: 8, vmax: 9 };
-// 좌우 화살표로 이동할 컬럼 순서 (모드별)
+// 좌우 화살표로 이동할 열 순서.
 const COL_NAV_NORMAL = ['name', 'status', 'v0set', 'i0set'];
 const COL_NAV_EXPERT = ['name', 'status', 'v0set', 'i0set', 'rup', 'rdown', 'vmax'];
 
@@ -325,7 +305,7 @@ function focusCell(rowIdx, colKey) {
   td.scrollIntoView({ block: 'nearest' });
 }
 
-/* ── Toast helper ── */
+/* 알림 메시지. */
 let toastTimer = null;
 function showToast(msg, type = 'ok') {
   toastEl.textContent = msg;
@@ -335,25 +315,11 @@ function showToast(msg, type = 'ok') {
   toastTimer = setTimeout(() => { toastEl.style.display = 'none'; }, 3500);
 }
 
-/* ── Modal helper ── */
-function showConfirm(message, onConfirm) {
-  modalBody.textContent = message;
-  modalOverlay.classList.add('visible');
-  pendingAction = onConfirm;
-}
-modalConfirm.addEventListener('click', () => {
-  modalOverlay.classList.remove('visible');
-  if (pendingAction) { pendingAction(); pendingAction = null; }
-});
-modalCancel.addEventListener('click', () => {
-  modalOverlay.classList.remove('visible');
-  pendingAction = null;
-});
+/* HV API 호출. */
+let _cmdInFlight = false;     // 명령 중에는 자동 갱신을 건너뛴다.
+let _statusInFlight = false;  // 상태 조회를 중복 실행하지 않는다.
 
-/* ── HV API call ── */
-let _cmdInFlight = false;  // 명령 실행 중 → auto-refresh 건너뜀
-
-// 명령 완료 후 갱신은 자동 갱신 인터벌에 맡김 (별도 타이머 없음)
+// 명령 후 상태 갱신은 자동 갱신 주기에 맡긴다.
 function scheduleRefresh() { /* no-op: setInterval이 다음 틱에 자동 갱신 */ }
 
 async function _sendHV(command, channels, value) {
@@ -373,7 +339,7 @@ async function _sendHV(command, channels, value) {
   if (!res.ok || data.ok === false) throw new Error(data.error || `HTTP ${res.status}`);
 }
 
-/* ── On/Off 배칭: 300ms 안에 들어온 명령을 모아 SSH 1번으로 처리 ── */
+/* 300ms 동안의 On/Off 명령을 한 SSH 요청으로 묶는다. */
 const _onOffBatch = { on: new Set(), off: new Set() };
 let _batchTimer = null;
 
@@ -404,7 +370,7 @@ async function applyHV(command, channels, value) {
     _batchTimer = setTimeout(_flushOnOff, 300);
     return;
   }
-  // voltage / i0set: 즉시 전송
+  // 전압과 전류 설정은 즉시 전송한다.
   _cmdInFlight = true;
   try {
     await _sendHV(command, channels, value);
@@ -417,13 +383,13 @@ async function applyHV(command, channels, value) {
   }
 }
 
-/* ── Global keyboard navigation ── */
+/* 전역 키보드 탐색. */
 document.addEventListener('keydown', e => {
   const inp = document.querySelector('input.inline-edit');
 
-  // 위/아래 화살표: 행 이동 (편집 중에도 동작 — 현재 편집 먼저 커밋)
+  // 위·아래 화살표로 행을 이동한다.
   if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-    // 편집 중이면 inline input keydown에서 처리 (중복 방지)
+    // 편집 중인 키 입력은 인라인 입력기가 처리한다.
     if (inp) return;
     e.preventDefault();
     if (focusedRowIdx < 0) { focusCell(0, focusedColKey); return; }
@@ -431,7 +397,7 @@ document.addEventListener('keydown', e => {
     return;
   }
 
-  // 좌/우 화살표: 편집 가능 컬럼 간 이동
+  // 좌·우 화살표로 편집 열을 이동한다.
   if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
     if (inp) return;
     e.preventDefault();
@@ -443,7 +409,7 @@ document.addEventListener('keydown', e => {
     return;
   }
 
-  // 스페이스바 / 엔터: 포커스된 셀 액션 실행
+  // 스페이스바와 Enter로 선택한 셀을 실행한다.
   if ((e.key === ' ' || e.key === 'Enter') && !inp) {
     const active = document.activeElement;
     if (active && active._action) {
@@ -453,43 +419,94 @@ document.addEventListener('keydown', e => {
   }
 });
 
-/* ── View toggle ── */
-viewBtn.addEventListener('click', () => {
-  showRaw = !showRaw;
-  viewBtn.textContent = showRaw ? '표 보기' : 'Raw 보기';
-  render();
-});
-
 function render() {
-  if (!lastRaw) return;
-  // Don't re-render while user is actively typing in an inline input
-  if (document.querySelector('input.inline-edit')) return;
-  if (showRaw || !lastRows) {
-    tblWrap.style.display = 'none';
-    rawEl.style.display   = 'block';
-    rawEl.textContent     = lastRaw;
-    msgEl.style.display   = 'none';
-  } else {
-    rawEl.style.display   = 'none';
-    tblWrap.style.display = 'block';
-    msgEl.style.display   = 'none';
-    renderTable(lastRows);
-  }
+  if (!lastRaw || !lastRows) return;
+  tblWrap.style.display = 'block';
+  msgEl.style.display = 'none';
+  renderTable(lastRows);
 }
 
-/* ── Table rendering ── */
+/* 테이블 렌더링. */
+const makeStatusBadge = (s, rawStatus) => {
+  if (s === 'on')   return '<span class="badge badge-on"><span class="dot dot-on"></span>On</span>';
+  if (s === 'off')  return '<span class="badge badge-off"><span class="dot dot-off"></span>Off</span>';
+  if (s === 'up')   return '<span class="badge badge-up"><span class="dot dot-up"></span>Up</span>';
+  if (s === 'down') return '<span class="badge badge-down"><span class="dot dot-down"></span>Down</span>';
+  if (isTrip(s) || isAlertSt(s)) return `<span class="badge badge-trip"><span class="dot dot-trip"></span>${rawStatus || 'Error'}</span>`;
+  return `<span class="badge badge-unk"><span class="dot dot-unk"></span>${rawStatus || '-'}</span>`;
+};
+
+const rowKey = r => `${r.crate}-${r.chan}`;
+
+function setCellText(td, value) {
+  // 편집 중인 셀은 실시간 조회값으로 덮어쓰지 않는다.
+  if (td.querySelector('input.inline-edit')) return;
+  const next = String(value ?? '-');
+  if (td.textContent !== next) td.textContent = next;
+}
+
+function updateRenderedRows(rows) {
+  const trs = [...tbody.rows];
+  const sameStructure =
+    trs.length === rows.length &&
+    tbody.dataset.expertMode === String(expertMode) &&
+    trs.every((tr, i) => tr.dataset.channel === rowKey(rows[i]));
+  if (!sameStructure) return false;
+
+  rows.forEach((next, rowIdx) => {
+    const tr = trs[rowIdx];
+    // 행 객체는 유지하고 최신 값만 반영한다.
+    Object.assign(tr._rowData, next);
+    const r = tr._rowData;
+    const cells = tr.cells;
+    const st = (r.status || '').toLowerCase();
+
+    tr.classList.toggle('trip-row', isAlertSt(st));
+    setCellText(cells[0], r.ch_label || '-');
+    setCellText(cells[1], r.name || '-');
+
+    const statusHtml = makeStatusBadge(st, r.status);
+    if (cells[2].innerHTML !== statusHtml) cells[2].innerHTML = statusHtml;
+    const editableStatus = st === 'on' || st === 'off' || st === 'up' || st === 'down' || isAlertSt(st);
+    if (editMode && editableStatus) {
+      const isOnLike = st.split('+').map(c => c.trim()).some(c => c === 'on' || c === 'up');
+      cells[2].className = 'status-edit';
+      cells[2].tabIndex = 0;
+      cells[2].title = isOnLike ? 'Space / Enter: Off' : 'Space / Enter: On';
+      cells[2]._action = () => {
+        const chName = r.name && r.name !== '-' ? r.name : `${r.crate}:${r.chan}`;
+        applyHV(isOnLike ? 'off' : 'on', [chName]);
+      };
+    } else {
+      cells[2].className = '';
+      cells[2].removeAttribute('tabindex');
+      cells[2].removeAttribute('title');
+      cells[2]._action = null;
+    }
+
+    const vmon = parseFloat(r.vmon);
+    setCellText(cells[3], !isNaN(vmon) ? vmon.toFixed(2) : (r.vmon || '-'));
+    cells[3].className = '';
+    cells[3].title = '';
+
+    const imon = parseFloat(r.imon);
+    setCellText(cells[4], !isNaN(imon) ? imon.toFixed(3) : (r.imon || '-'));
+    setCellText(cells[5], r.v0set || '-');
+    setCellText(cells[6], r.i0set || '-');
+    setCellText(cells[7], r.rup || '-');
+    setCellText(cells[8], r.rdown || '-');
+    setCellText(cells[9], r.vmax || '-');
+  });
+  return true;
+}
+
 function renderTable(rows) {
+  // 자동 갱신은 행 값만 바꿔 스크롤과 포커스를 유지한다.
+  if (updateRenderedRows(rows)) return;
+  // 채널 구성이나 전문가 모드가 바뀌면 테이블을 재구성한다.
   if (document.querySelector('input.inline-edit')) return;
   tbody.innerHTML = '';
-
-  const makeStatusBadge = (s, rawStatus) => {
-    if (s === 'on')   return '<span class="badge badge-on"><span class="dot dot-on"></span>On</span>';
-    if (s === 'off')  return '<span class="badge badge-off"><span class="dot dot-off"></span>Off</span>';
-    if (s === 'up')   return '<span class="badge badge-up"><span class="dot dot-up"></span>Up</span>';
-    if (s === 'down') return '<span class="badge badge-down"><span class="dot dot-down"></span>Down</span>';
-    if (isTrip(s))    return `<span class="badge badge-trip"><span class="dot dot-trip"></span>${rawStatus || 'Trip'}</span>`;
-    return `<span class="badge badge-unk"><span class="dot dot-unk"></span>${rawStatus || '-'}</span>`;
-  };
+  tbody.dataset.expertMode = String(expertMode);
 
   const makeInlineEdit = (td, opts) => {
     /* opts: { cur, step, min, max, type, onCommit(v) } */
@@ -535,6 +552,8 @@ function renderTable(rows) {
 
   rows.forEach((r, rowIdx) => {
     const tr = document.createElement('tr');
+    tr.dataset.channel = rowKey(r);
+    tr._rowData = r;
     const st = (r.status || '').toLowerCase();
     if (isAlertSt(st)) tr.classList.add('trip-row');
 
@@ -584,16 +603,8 @@ function renderTable(rows) {
 
     // VMon
     const vmon  = parseFloat(r.vmon);
-    const v0set = parseFloat(r.v0set);
     const tdVMon = document.createElement('td');
-    if (!isNaN(vmon) && !isNaN(v0set)) {
-      const diff = Math.abs(vmon - v0set);
-      tdVMon.textContent = vmon.toFixed(2);
-      tdVMon.className = diff > 5 ? 'vmon-warn' : 'vmon-ok';
-      if (diff > 5) tdVMon.title = `V0Set: ${v0set} · 차이: ${diff.toFixed(1)} V`;
-    } else {
-      tdVMon.textContent = r.vmon || '-';
-    }
+    tdVMon.textContent = !isNaN(vmon) ? vmon.toFixed(2) : (r.vmon || '-');
     tr.appendChild(tdVMon);
 
     // IMon
@@ -721,7 +732,7 @@ function renderTable(rows) {
     tbody.appendChild(tr);
   });
 
-  // 편집 모드에서 이전 포커스 위치 복원
+  // 이전 포커스 위치를 복원한다.
   if (editMode && focusedRowIdx >= 0) {
     requestAnimationFrame(() => focusCell(focusedRowIdx, focusedColKey));
   }
@@ -784,9 +795,10 @@ function parseHvOutput(raw) {
   return rows;
 }
 
-/* ── Fetch ── */
+/* 상태 조회. */
 async function loadStatus() {
-  if (_cmdInFlight) return;  // 명령 실행 중이면 이번 틱 건너뜀
+  if (_cmdInFlight || _statusInFlight) return;
+  _statusInFlight = true;
   try {
     const res  = await fetch('/api/hv/status-all?t=' + Date.now() + (expertMode ? '&expert=1' : ''));
     const data = await res.json();
@@ -796,15 +808,18 @@ async function loadStatus() {
     lastRows = parseHvOutput(lastRaw);
     detectTransitions(lastRows);
 
-    tsEl.textContent = '마지막: ' + new Date().toLocaleTimeString();
+    tsEl.textContent = '마지막 갱신 ' + new Date().toLocaleTimeString();
+    liveStatusEl.classList.remove('error');
     render();
   } catch (e) {
     msgEl.textContent  = '조회 실패: ' + e.message;
     msgEl.className    = 'error';
     msgEl.style.display = 'block';
     tblWrap.style.display = 'none';
-    rawEl.style.display   = 'none';
     tsEl.textContent = '오류';
+    liveStatusEl.classList.add('error');
+  } finally {
+    _statusInFlight = false;
   }
 }
 
@@ -814,7 +829,7 @@ function setExpertColumnsVisible(visible) {
   });
 }
 
-/* ── Auto-refresh ── */
+/* 자동 갱신. */
 function applyAutoInterval(ms) {
   autoMs = ms;
   autoIdx = AUTO_CHOICES.indexOf(ms);
@@ -824,6 +839,7 @@ function applyAutoInterval(ms) {
   }
   timerAuto = setInterval(loadStatus, autoMs);
   autoBtn.textContent = `자동 갱신: ${autoMs / 1000}초`;
+  liveIntervalEl.textContent = `실시간 · ${autoMs / 1000}초 간격`;
   autoBtn.classList.add('active');
 }
 
@@ -841,7 +857,7 @@ expertBtn.addEventListener('click', () => {
   loadStatus();
 });
 
-/* ── Hodoscope HV card ── */
+/* 호도스코프 HV 카드. */
 const hodoValEl = document.getElementById('hodo-val');
 
 async function loadHodoscopeHV() {
@@ -851,16 +867,16 @@ async function loadHodoscopeHV() {
     if (!res.ok || data.ok === false) throw new Error(data.error || `HTTP ${res.status}`);
     const hv = parseFloat(data.hv);
     if (hv === 0.0) {
-      hodoValEl.innerHTML = '<span style="color:#ef5350">Off (0.0 V)</span>';
+      hodoValEl.innerHTML = '<span style="color:#dc2626">Off (0.0 V)</span>';
     } else {
-      hodoValEl.innerHTML = `<span style="color:#81c784">${hv} V</span>`;
+      hodoValEl.innerHTML = `<span style="color:#15803d">${hv} V</span>`;
     }
   } catch (e) {
-    hodoValEl.innerHTML = `<span style="color:#ef5350">읽기 실패: ${e.message}</span>`;
+    hodoValEl.innerHTML = `<span style="color:#dc2626">읽기 실패: ${e.message}</span>`;
   }
 }
 
-/* ── Init ── */
+/* 초기화. */
 setExpertColumnsVisible(false);
 loadStatus();
 loadHodoscopeHV();
@@ -868,7 +884,7 @@ applyAutoInterval(autoMs);
 
 setInterval(loadHodoscopeHV, autoMs);
 
-/* ─── Trip / Ramp-Complete Alerts ─────────────────────────── */
+/* Trip 및 램프 완료 알림. */
 
 const HV_AUDIO_TRIP = '/static/audio/trip.mp3';
 const HV_AUDIO_RAMP = '/static/audio/ramp.mp3';
@@ -943,12 +959,12 @@ function detectTransitions(newRows) {
   hvFirstLoad = false;
 
   if (currentAlerts.length > 0) {
-    // status를 + 기준으로 분리 → 모든 활성 조건 수집 (중복 제거)
+    // 상태 문자열에서 활성 조건을 중복 없이 수집한다.
     const allConditions = [...new Set(
       currentAlerts.flatMap(a => a.status.split('+').map(c => c.trim()))
     )];
     tripBannerLabel.textContent = allConditions.join(' + ') + ' 발생!';
-    // 채널별로 조건 표시: "T1C(Over Current+Internal Trip)"
+    // 채널별 활성 조건을 함께 표시한다.
     tripBannerCh.textContent = currentAlerts
       .map(a => `${a.name}(${a.status})`)
       .join('  ·  ');

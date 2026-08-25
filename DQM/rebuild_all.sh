@@ -1,35 +1,20 @@
 #!/bin/bash
-# ── Full DQM rebuild: dylib + every standalone executable ──────────────────
-#
-# Run this whenever a header (DQM/include/*.h) changes. Changing a class's
-# data members alters its memory layout, and any executable that does
-# `new T(...)` on that class needs to be relinked or it will corrupt
-# memory at runtime (typical symptom: segfault inside yaml-cpp/ROOT/etc.
-# on the first non-trivial pointer access after construction).
-#
-# Steps:
-#   1. buildNinstall.sh  → rebuild + install libdrcTB.dylib
-#   2. envset.sh         → set DYLD paths, ROOT, yaml-cpp
-#   3. compile.sh <file> → relink each standalone *.cc in DQM/
-#
+# DQM 라이브러리와 독립 실행 파일을 다시 빌드한다.
 # Usage:
 #   bash rebuild_all.sh                # rebuild everything
 #   bash rebuild_all.sh monit          # rebuild only the listed targets
 #   bash rebuild_all.sh --lib-only     # only step 1 (dylib, no executables)
 #   bash rebuild_all.sh --bins-only    # only steps 2–3 (executables only)
 #
-# Exit code:
-#   0 if every requested step succeeded; 1 otherwise. The script never
-#   stops early on a single failure — it reports a summary at the end so
-#   you can see all problems at once.
+# 모든 대상을 처리한 뒤 실패 항목을 요약한다.
 
-set -u  # unset variable = error; we intentionally do NOT set -e (see above)
+set -u  # 정의되지 않은 변수는 오류로 처리한다.
 
-# ── Locate DQM root regardless of where the script is invoked from ────────
+# 스크립트 위치를 기준으로 DQM 경로를 정한다.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-# ── Parse flags ───────────────────────────────────────────────────────────
+# 실행 옵션을 해석한다.
 DO_LIB=1
 DO_BINS=1
 EXPLICIT_TARGETS=()
@@ -53,20 +38,19 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-# If the user named explicit targets, switch off the dylib rebuild unless
-# they also passed --lib-only (selective re-link only).
+# 대상을 지정하면 해당 실행 파일만 다시 연결한다.
 if [ ${#EXPLICIT_TARGETS[@]} -gt 0 ] && [ "$DO_LIB" -eq 1 ] && [ "$DO_BINS" -eq 1 ]; then
   DO_LIB=0
 fi
 
-# Pretty header
+# 출력 구분선.
 hr() { printf '═%.0s' {1..70}; echo; }
 banner() { hr; echo "  $1"; hr; }
 
 OK_LIST=()
 FAIL_LIST=()
 
-# ── Step 1: rebuild the dylib ─────────────────────────────────────────────
+# DQM 동적 라이브러리를 다시 빌드한다.
 if [ "$DO_LIB" -eq 1 ]; then
   banner "1/2  building libdrcTB.dylib (buildNinstall.sh)"
   if bash buildNinstall.sh; then
@@ -78,19 +62,19 @@ if [ "$DO_LIB" -eq 1 ]; then
   fi
 fi
 
-# ── Step 2: source env, then re-link every standalone *.cc ─────────────────
+# 환경을 적용하고 독립 실행 파일을 다시 연결한다.
 if [ "$DO_BINS" -eq 1 ]; then
   banner "2/2  re-linking standalone executables (compile.sh)"
 
-  # Source env vars (ROOT, yaml-cpp, DYLD paths). compile.sh needs these.
+  # 컴파일에 필요한 환경 변수를 불러온다.
   # shellcheck disable=SC1091
   source ./envset.sh
 
-  # Decide which sources to recompile.
+  # 다시 컴파일할 소스를 선택한다.
   if [ ${#EXPLICIT_TARGETS[@]} -gt 0 ]; then
     TARGETS=()
     for t in "${EXPLICIT_TARGETS[@]}"; do
-      # Accept either "monit" or "monit.cc"
+      # 대상명과 .cc 파일명을 모두 허용한다.
       src="${t%.cc}.cc"
       if [ -f "$src" ]; then
         TARGETS+=("$src")
@@ -99,7 +83,7 @@ if [ "$DO_BINS" -eq 1 ]; then
       fi
     done
   else
-    # Glob every standalone .cc in DQM/ (src/*.cc belongs to the library).
+    # DQM 루트의 독립 실행 소스를 모두 선택한다.
     shopt -s nullglob
     TARGETS=( *.cc )
     shopt -u nullglob
@@ -121,7 +105,7 @@ if [ "$DO_BINS" -eq 1 ]; then
   done
 fi
 
-# ── Summary ───────────────────────────────────────────────────────────────
+# 빌드 결과를 요약한다.
 echo
 banner "summary"
 if [ ${#OK_LIST[@]} -gt 0 ]; then

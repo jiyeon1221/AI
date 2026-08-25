@@ -58,7 +58,7 @@ int main(int argc, char *argv[]) {
         cids.push_back(util.GetCID(channel_names.at(idx)));
     }
         
-    // MID: 3-7: PMT modules, MID 9: LC, MID 10: Aux(CC1, CC2, PS, TC, MC), MID 12: Triggers (T1, T2, T1NIM, T2NIM, Coin), MID 14-17: MCP micro, MID 18: DWC
+  // MID 장비: 3–7 PMT, 9 LC, 10 Aux, 12 Trigger, 14–17 MCP, 18 DWC.
     TBread<TBwaveform> readerWave = TBread<TBwaveform>(fRunNum, fMaxEvent, fMaxFile, false, "/pnfs/knu.ac.kr/data/cms/store/user/sungwon/2025_KEK_TB_Data", {8, 9, 13});
     
     // Set Maximum event

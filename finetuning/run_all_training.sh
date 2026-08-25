@@ -1,14 +1,6 @@
 #!/usr/bin/env bash
-# ──────────────────────────────────────────────────────────────
-# run_all_training.sh
-# 데이터 생성 → 학습을 순차적으로 실행 (메모리 부족으로 병렬 불가)
+# 학습 데이터 생성과 모델 학습을 순차 실행한다.
 # 실행: bash finetuning/run_all_training.sh [agent1 agent2 ...]
-#
-# 예시:
-#   bash finetuning/run_all_training.sh               # 전체 파이프라인
-#   bash finetuning/run_all_training.sh brain         # brain만
-#   bash finetuning/run_all_training.sh calibration energy_scan
-# ──────────────────────────────────────────────────────────────
 
 set -euo pipefail
 
@@ -20,7 +12,7 @@ mkdir -p "$LOG_DIR"
 TIMESTAMP=$(date '+%Y%m%d_%H%M%S')
 SUMMARY_LOG="$LOG_DIR/run_all_${TIMESTAMP}.log"
 
-# 가상환경 활성화 (경로가 다르면 수정)
+# 프로젝트 가상환경이 있으면 활성화한다.
 if [ -f "$PROJECT_DIR/ai/bin/activate" ]; then
     source "$PROJECT_DIR/ai/bin/activate"
 fi
@@ -51,8 +43,6 @@ run_step() {
     fi
 }
 
-# ──────────────────────────────────────────────────────────────
-
 log "════════════════════════════════════════════════════════"
 log "  AutoTB Training Pipeline  ($TIMESTAMP)"
 log "  Project : $PROJECT_DIR"
@@ -61,14 +51,14 @@ log "═════════════════════════
 
 PIPELINE_START=$(date +%s)
 
-# 학습할 agent 목록 결정 (인수 없으면 전체)
+# 인수가 없으면 모든 agent를 학습한다.
 if [ $# -gt 0 ]; then
     AGENTS=("$@")
 else
     AGENTS=(calibration energy_scan hv_equalization position_scan brain)
 fi
 
-# ── Data generation ───────────────────────────────────────────
+# 학습 데이터 생성.
 get_data_gen_script() {
     case "$1" in
         calibration)     echo "$SCRIPT_DIR/calib_data_gen.py" ;;
@@ -89,13 +79,11 @@ for agent in "${AGENTS[@]}"; do
     fi
 done
 
-# ── Training ──────────────────────────────────────────────────
+# 모델 학습.
 for agent in "${AGENTS[@]}"; do
     run_step "${agent}_train" \
         "$SCRIPT_DIR/train.py" "$agent"
 done
-
-# ──────────────────────────────────────────────────────────────
 
 TOTAL=$(( $(date +%s) - PIPELINE_START ))
 HOURS=$(( TOTAL / 3600 ))

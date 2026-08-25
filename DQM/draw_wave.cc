@@ -44,7 +44,6 @@ int main(int argc, char** argv) {
     for (int plot_args = 3; plot_args < argc; plot_args++)
     {
         channel_names.push_back(argv[plot_args]);
-        // myColorPalette.push_back(gStyle->GetColorPalette((plot_args - 10) * ((float)gStyle->GetNumberOfColors() / ((float)argc - 10.))));
         myColorPalette.push_back(gStyle->GetColorPalette((plot_args) * ((float)gStyle->GetNumberOfColors() / ((float)argc))));
     }
 
@@ -91,7 +90,6 @@ int main(int argc, char** argv) {
             plots.push_back(new TH1F((TString) (channel_names.at(idx) + "_Evt_" + std::to_string(iEvt) + channel_names.at(idx)), ";bin;ADC", 1000, 0, 1000));
             plots.at(idx)->SetLineColor(myColorPalette.at(idx));
             plots.at(idx)->GetYaxis()->SetRangeUser(3000, 4096);
-            // leg->AddEntry(plots.at(idx), (TString)channel_names.at(idx), "l");
 
         auto single_waveform = aEvent.GetData(cids.at(idx)).waveform();
 
@@ -107,8 +105,6 @@ int main(int argc, char** argv) {
             c->RedrawAxis();
             plots.at(idx)->Draw("Hist");
             leg->AddEntry(plots.at(idx), (TString)channel_names.at(idx), "l");
-            // if (idx == 0) plots.at(idx)->Draw("Hist");
-            // else plots.at(idx)->Draw("Hist&sames");
             leg->Draw("sames");
             plots.at(idx)->Write();
             c->SaveAs( (TString) ( "./Waveform/Run_" + std::to_string(fRunNum) + "/" + channel_names.at(idx) + "/Evt_" + std::to_string(iEvt) + ".png") );

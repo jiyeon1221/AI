@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""
-공통 fine-tuning 유틸리티
-  - setup_clean_logging()    : HuggingFace 라이브러리 verbose 로그 억제
-  - EpochLossCallback        : epoch마다 train/eval loss 한 줄 출력 + JSON 저장
-  - plot_loss_curve()        : loss 추세 이미지 생성 및 저장
-"""
+"""Fine-tuning 로그, 메모리 정리, 손실 그래프 유틸리티를 제공한다."""
 
 import gc
 import json
@@ -34,12 +29,7 @@ def _empty_device_cache() -> None:
 
 
 class MemoryCleanupCallback(TrainerCallback):
-    """
-    eval/save 직후 device 캐시를 비운다.
-
-    MPS(Apple Silicon)에서 eval이 할당한 메모리가 allocator 캐시에 남아
-    이후 학습이 메모리 압박으로 급격히 느려지는(스왑) 문제를 방지한다.
-    """
+    """평가와 저장 후 장치 메모리 캐시를 비운다."""
 
     def on_evaluate(self, args: TrainingArguments, state: TrainerState,
                     control: TrainerControl, **kwargs):
@@ -50,18 +40,10 @@ class MemoryCleanupCallback(TrainerCallback):
         _empty_device_cache()
 
 
-# ──────────────────────────────────────────────────────────
-# Callback
-# ──────────────────────────────────────────────────────────
+# Epoch 손실 기록 콜백.
 
 class EpochLossCallback(TrainerCallback):
-    """
-    Epoch 단위로 train_loss / eval_loss를 한 줄로 출력한다.
-
-    - on_log : step-level train loss 누적
-    - on_epoch_end : epoch 평균 train loss + 최신 eval loss 출력
-    - on_train_end : log_history 전체를 JSON으로 저장
-    """
+    """Epoch별 학습·평가 손실을 출력하고 로그로 저장한다."""
 
     def __init__(self, agent_name: str, log_dir: Optional[Path] = None):
         self.agent_name = agent_name
@@ -71,7 +53,6 @@ class EpochLossCallback(TrainerCallback):
         self._lines: list[str] = []
         self._timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    # ----------------------------------------------------------
     def on_log(self, args: TrainingArguments, state: TrainerState,
                control: TrainerControl, logs=None, **kwargs):
         if logs is None:
@@ -89,7 +70,7 @@ class EpochLossCallback(TrainerCallback):
                      if self._step_losses else None)
         self._step_losses.clear()
 
-        # 가장 최근 eval_loss
+        # 최근 평가 손실.
         eval_loss = None
         for entry in reversed(state.log_history):
             if "eval_loss" in entry:
@@ -112,11 +93,11 @@ class EpochLossCallback(TrainerCallback):
             return
         self.log_dir.mkdir(parents=True, exist_ok=True)
 
-        # epoch 요약 텍스트
+        # Epoch 요약.
         summary_path = self.log_dir / f"{self.agent_name}_{self._timestamp}_epochs.log"
         summary_path.write_text("\n".join(self._lines) + "\n", encoding="utf-8")
 
-        # 전체 log_history JSON (plot_loss_curve에서 재활용 가능)
+        # 전체 학습 로그.
         json_path = self.log_dir / f"{self.agent_name}_{self._timestamp}_log_history.json"
         json_path.write_text(
             json.dumps(state.log_history, indent=2, ensure_ascii=False),
@@ -126,24 +107,14 @@ class EpochLossCallback(TrainerCallback):
         print(f"Log history : {json_path}", flush=True)
 
 
-# ──────────────────────────────────────────────────────────
-# Loss curve image
-# ──────────────────────────────────────────────────────────
+# 손실 추세 그래프.
 
 def plot_loss_curve(
     log_history: list[dict],
     output_path: Path,
     title: str = "Training Loss",
 ) -> None:
-    """
-    trainer.state.log_history 를 받아 train/eval loss 추세 이미지를 저장한다.
-
-    Parameters
-    ----------
-    log_history : trainer.state.log_history
-    output_path : 저장할 PNG 파일 경로 (부모 디렉터리가 없으면 생성)
-    title       : 그래프 제목
-    """
+    """학습 로그의 train/eval 손실 추세를 이미지로 저장한다."""
     try:
         import matplotlib
         matplotlib.use("Agg")
@@ -157,7 +128,7 @@ def plot_loss_curve(
 
     for entry in log_history:
         step = entry.get("step", 0)
-        # eval 항목에도 "loss" 키가 있을 수 있으므로 eval_loss 여부로 분기
+        # 평가 로그와 학습 로그를 분리한다.
         if "eval_loss" in entry:
             eval_steps.append(step)
             eval_losses.append(entry["eval_loss"])
@@ -169,7 +140,7 @@ def plot_loss_curve(
         print("log_history에 loss 정보가 없어 그래프를 건너뜁니다.", flush=True)
         return
 
-    # ── 다크 테마 그래프 ──────────────────────────────────
+    # 그래프 색상.
     BG      = "#0f1117"
     PANEL   = "#1a1d27"
     GRID    = "#2c2f3e"

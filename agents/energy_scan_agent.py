@@ -9,7 +9,6 @@ from pathlib import Path
 from datetime import datetime
 
 from tools.daq_tool import DAQRunTool
-import tools.motor_control_tool as motor
 
 from .base_agent import BaseAgent, format_event_count, extract_number_tokens, _normalize_thousands_commas
 sys.path.append(str(Path(__file__).parent.parent))
@@ -23,7 +22,7 @@ class EnergyScanAgent(BaseAgent):
         tower: str = "T5",
         position: Optional[Dict[str, float]] = None,
         daq_config: str = "setup",
-        use_base_model: bool = True,  # Fine-tuning 전에는 base model 사용
+        use_base_model: bool = True,  # 기본 모델 사용 여부.
         io_handler=None,
     ):
         model_config = AGENT_MODELS["energy_scan"]
@@ -49,8 +48,7 @@ class EnergyScanAgent(BaseAgent):
         self.daq_tool = DAQRunTool()
         
         from tools.position_calculator_tool import get_calculator
-        # 선택한 tower의 위치를 계산 (예전엔 "T5"가 하드코딩돼 있어 다른 타워를
-        # 골라도 T5 위치로 이동하는 버그가 있었음).
+        # 선택한 타워의 이동 위치를 계산한다.
         t5_pos = get_calculator().calculate_tower_position(tower, rotation=1.5, tilting=1.0)
         self.t5_x = t5_pos['x']
         self.t5_y = t5_pos['y']
@@ -58,6 +56,8 @@ class EnergyScanAgent(BaseAgent):
         self.state = {
             "phase": "config" if not self._init_energy_config else "idle",
             "tower": tower,
+            # DQM 실시간 캔버스가 참조하는 현재 타워.
+            "current_tower": tower,
             "position": position,
             "daq_config": daq_config,
             "t5_x": self.t5_x,
@@ -88,7 +88,7 @@ class EnergyScanAgent(BaseAgent):
         
         self.log(f"Energy Scan Agent 초기화: {list(self._init_energy_config.keys())} GeV")
     
-    # ===== System Prompt =====
+    # 시스템 프롬프트.
     
     def _get_system_prompt(self) -> str:
         """System prompt (workflow 정의)"""
@@ -176,7 +176,7 @@ When ALL energies are completed, the SYSTEM sends the completion message and end
 7. All "message" field values MUST be written in Korean (한국어) only. Never use Chinese characters (한자).
 """
     
-    # ===== State Context =====
+    # 상태 컨텍스트.
     
     def _build_state_context(self) -> str:
         """State를 문자열로 변환"""
@@ -217,7 +217,7 @@ When ALL energies are completed, the SYSTEM sends the completion message and end
         if phase == "idle":
             if not self.state.get("x_moved"):
                 return f"Phase: idle | REQUIRED NEXT: motor_x_move_tool (step 1a-i, x={self.t5_x:.3f})"
-            # Y축 확인은 사용자 '완료' 시 코드가 처리한다 (phase→scanning). 모델은 Y 이동 메시지만 출력.
+            # Y축 이동 완료 여부는 사용자 응답으로 처리한다.
             return f"Phase: idle | REQUIRED NEXT: Y-axis move message (step 1a-ii, y={self.t5_y:.3f})"
         current_energy = self.state.get("current_energy")
         scan_order = self.state.get("scan_order", [])
@@ -241,47 +241,7 @@ When ALL energies are completed, the SYSTEM sends the completion message and end
             f"REQUIRED NEXT: set-beam message (step 2a) then daq_run_tool (step 2b)"
         )
 
-    def build_full_context(self, current_input: Optional[str] = None) -> str:
-        """전체 context 생성 (단계별 힌트 포함)"""
-        
-        # data_gen과 형식 통일: 마지막 user 메시지는 current_input으로 분리
-        if current_input is None and self.conversation_history:
-            if self.conversation_history[-1]["role"] == "user":
-                current_input = self.conversation_history[-1]["content"]
-                temp_history = self.conversation_history[:-1]
-            else:
-                temp_history = self.conversation_history
-        else:
-            temp_history = self.conversation_history
-
-        parts = []
-        parts.append("=== Current State ===")
-        parts.append(self._build_state_context())
-        parts.append("")
-        parts.append("=== Recent Conversation ===")
-        history_lines = []
-        if not temp_history:
-            history_lines.append("(No conversation yet)")
-        else:
-            recent_history = temp_history[-10:]
-            for msg in recent_history:
-                role = "User" if msg["role"] == "user" else "Agent"
-                history_lines.append(f"{role}: {msg['content']}")
-        parts.append("\n".join(history_lines))
-        parts.append("")
-
-        if current_input:
-            parts.append("=== Current User Input ===")
-            parts.append(current_input)
-            parts.append("")
-
-        parts.append("=== Your Task ===")
-        parts.append(self._get_step_hint())
-        parts.append("")
-        parts.append("Output JSON with tool name and parameters.")
-        return "\n".join(parts)
-
-    # ===== 공용 드라이버 hooks (run()은 BaseAgent에서 제공) =====
+    # BaseAgent 실행 루프용 훅.
 
     def _print_banner(self):
         print(f"\n{'='*70}\n⚡ Energy Scan Agent Started\n{'='*70}")
@@ -309,7 +269,7 @@ When ALL energies are completed, the SYSTEM sends the completion message and end
 
     def _pre_iteration(self):
         self._print_summary()
-        # scanning 시작 시 다음 미완료 에너지로 자동 전환
+        # 다음 미완료 에너지로 이동한다.
         if self.state.get('phase') == 'scanning':
             _cur = self.state.get('current_energy')
             _cur_done = _cur is not None and self.state['energy_config'].get(_cur, {}).get('completed', False)
@@ -336,13 +296,13 @@ When ALL energies are completed, the SYSTEM sends the completion message and end
         return self._format_progress()
 
     def _on_user_input(self, user_input: str):
-        # 1) Y축 이동 확인 (T5 고정 위치이므로 스캔당 1회). 코드가 직접 처리.
+        # Y축 이동 확인을 기록한다.
         if self.state.get("x_moved") and not self.state.get("y_confirmed"):
             self.state["y_confirmed"] = True
             self.state["phase"] = "scanning"
             self.log("Y-axis confirmed by user → phase=scanning")
             return
-        # 2) DAQ 후 plot 확인 → 현재 에너지 완료 처리 (코드가 소유)
+        # 플롯 확인 후 현재 에너지를 완료 처리한다.
         if self.state.get("needs_plot_confirm"):
             self.state["needs_plot_confirm"] = False
             e = self.state.get("current_energy")
@@ -373,7 +333,7 @@ When ALL energies are completed, the SYSTEM sends the completion message and end
                 return e
         return None
 
-    # ===== Tool 실행 =====
+    # 도구 실행.
 
     def _execute_tool(self, tool_name: str, params: Dict) -> str:
         """Tool 실행"""
@@ -386,15 +346,7 @@ When ALL energies are completed, the SYSTEM sends the completion message and end
             return "no_tool_executed"
 
         elif tool_name == "motor_x_move_tool":
-            x = self._motor_x_for_current_step()
-            self.io.send_tool_output(f"[Motor] X축 이동 시작 (T5): {x:.3f} mm")
-            def _do_move():
-                ok, msg = motor.move_x(x)
-                if not ok:
-                    raise RuntimeError(msg)
-                return msg
-            result = self._run_tool_with_retry(_do_move, "motor_x_move_tool")
-            self.io.send_tool_output(f"[Motor] {result}")
+            result = self._run_motor_x_move("T5")
             self.state["x_moved"] = True
             return result
 
@@ -403,7 +355,7 @@ When ALL energies are completed, the SYSTEM sends the completion message and end
             events = None
             if energy_key is not None and energy_key in self.state['energy_config']:
                 events = self.state['energy_config'][energy_key]['target_events']
-            self._apply_daq_params_from_state(
+            result, run_number = self._run_daq_from_state(
                 params,
                 events=events,
                 beam_energy=energy_key,
@@ -413,25 +365,12 @@ When ALL energies are completed, the SYSTEM sends the completion message and end
                 pos_tilt=1.0,
                 config=self._daq_config_for(energy_key),
             )
-
-            # DAQ 실행. daq_tool 내부의 dqm_session.start()이 monit --LIVE를 띄워서
-            # DAQ 동안 우측 하단 DQM 패널이 실시간 갱신된다 — 여기가 유일한 플롯 경로.
-            result = self._run_tool_with_retry(
-                lambda: self.daq_tool.execute(params, line_callback=self.io.send_tool_output),
-                "daq_run_tool",
-            )
-
-            run_number = self._extract_run_number(result)
             if run_number:
-                self.state['last_run_number'] = run_number
                 if energy_key is not None and energy_key in self.state['energy_config']:
                     self.state['current_energy'] = energy_key
                     self.state['energy_config'][energy_key]['runs'].append(run_number)
                     self.state['energy_config'][energy_key]['collected_events'] = params.get('events', 0)
                     self.log(f"DAQ Run {run_number} 완료: {energy_key} GeV, {params.get('events', 0)} events")
-            # 사용자 plot 확인 전까지 completed=True 차단
-            self.state['needs_plot_confirm'] = True
-
             return result
 
         else:
@@ -439,7 +378,7 @@ When ALL energies are completed, the SYSTEM sends the completion message and end
             self.log(f"Unknown tool: {tool_name}")
             return f"Error: Unknown tool {tool_name}"
     
-    # ===== Helper 함수 =====
+    # 보조 함수.
     
     def _guard_tool(self, tool_name: str, params) -> Optional[str]:
         if tool_name == "daq_run_tool" and self.state.get("needs_plot_confirm"):
@@ -449,50 +388,34 @@ When ALL energies are completed, the SYSTEM sends the completion message and end
             )
         return None
 
-    def _guard_ai_message(self, message: str) -> Optional[str]:
-        if MSG_PLOT_CONFIRM in message and not self.state.get("needs_plot_confirm"):
-            return f"needs_plot_confirm=False — DO NOT send plot confirmation. {self._get_step_hint()}"
-        return None
+    # 플롯 확인은 BaseAgent에서 검사한다.
 
-    # Fields the LLM must not overwrite.
-    # - init-only config: tower, daq_config, start_time, plot_method, plot_max_event
-    # - code-owned bookkeeping (driver/_on_user_input/_execute_tool set these): x_moved,
-    #   y_confirmed, needs_plot_confirm, current_energy_idx, last_run_number
+    # 코드에서만 관리하는 상태 필드.
     _PROTECTED_FIELDS = frozenset({
-        "tower", "daq_config", "start_time", "plot_method", "plot_max_event",
-        "x_moved", "y_confirmed", "needs_plot_confirm", "current_energy_idx",
-        "last_run_number",
+        "tower", "current_tower", "daq_config", "start_time", "plot_method",
+        "plot_max_event", "x_moved", "y_confirmed", "needs_plot_confirm",
+        "current_energy_idx", "last_run_number",
     })
 
-    # 나열 구분자: "1,2,3GeV"처럼 리스트로 연결된 숫자를 같은 에너지 그룹으로 묶는다.
-    # 공백만으로는 나열로 보지 않음("3GeV 10000 2GeV"의 10000이 에너지로 흡수되는 것 방지)
+    # 목록 구분자로 연결된 숫자를 같은 에너지 그룹으로 묶는다.
     _ENUM_SEP = re.compile(r'^\s*(?:[,·、/&]|와|과|및|그리고|and)\s*$', re.IGNORECASE)
-    # 나열 멤버로 인정할 에너지 상한 — 이벤트 수(보통 수천 이상)와 구분
+    # 이벤트 수와 구분하기 위한 에너지 상한.
     _MAX_ENUM_ENERGY = 1000
 
-    # DAQ config 이름 토큰: 문자로 시작하는 ASCII 단어 (예: setup1, test, config1).
-    # lookbehind로 "10GeV"의 GeV처럼 숫자/문자에 붙은 꼬리는 제외.
+    # 문자로 시작하는 DAQ 설정 이름.
     _RE_CONFIG_TOKEN = re.compile(r'(?<![0-9A-Za-z_])([A-Za-z][A-Za-z0-9_-]*)')
-    # config 이름이 아닌 일반 ASCII 단어 (단독 "GeV", 영어 표현 등)
+    # DAQ 설정 이름에서 제외할 일반 단어.
     _CONFIG_TOKEN_STOPWORDS = {
         "gev", "mev", "tev", "and", "all", "events", "event", "evt", "evts",
         "run", "daq", "k",
     }
 
     def _parse_config_pairs(self, text: str) -> Optional[Dict[float, tuple]]:
-        """GeV 앵커 기반으로 사용자 입력에서 (에너지 → (이벤트 수, DAQ config 이름))
-        짝을 결정론적으로 파싱. config 이름은 해당 에너지 구간에 있으면 그 에너지에,
-        첫 에너지보다 앞에 있으면 전체에 적용, 없으면 None (기본 "setup").
-        확실하게 짝지을 수 있을 때만 결과 반환, 애매하면 None (출처 검증으로 폴백).
-        예) '3GeV 10000개, 2GeV는 30000'            → {3.0: (10000, None), 2.0: (30000, None)}
-            '1GeV 10000 2GeV 20000 3GeV setup1로 200000'
-                → {1.0: (10000, None), 2.0: (20000, None), 3.0: (200000, 'setup1')}
-            'test로 1,2GeV 모두 500개'               → {1.0: (500, 'test'), 2.0: (500, 'test')}"""
+        """에너지별 이벤트 수와 DAQ 설정 이름을 사용자 입력에서 파싱한다."""
         normalized = _normalize_thousands_commas(text) if isinstance(text, str) else ""
 
-        # DAQ config 이름 토큰을 먼저 떼어내고 같은 길이의 공백으로 치환 —
-        # 이름 속 숫자("setup1"의 1)가 에너지/이벤트 토큰으로 오인되는 것 방지.
-        config_tokens: list = []  # (이름, 시작위치)
+        # 설정 이름 영역을 공백으로 바꿔 숫자 분석에서 제외한다.
+        config_tokens: list = []  # (이름, 시작 위치)
         def _blank(m):
             tok = m.group(1)
             if tok.lower() in self._CONFIG_TOKEN_STOPWORDS:
@@ -501,14 +424,13 @@ When ALL energies are completed, the SYSTEM sends the completion message and end
             return " " * len(tok)
         blanked = self._RE_CONFIG_TOKEN.sub(_blank, normalized)
 
-        tokens = extract_number_tokens(blanked)  # 위치는 blanked(=normalized) 기준
-        normalized = blanked  # 이하 구분자 검사도 blanked 기준
+        tokens = extract_number_tokens(blanked)  # 위치는 치환된 문자열 기준이다.
+        normalized = blanked
 
-        # 1) 그룹핑: 나열 구분자로 이어진 plain 숫자들이 GeV 앵커 숫자로 끝나면
-        #    전체를 하나의 에너지 그룹으로 ("1,2,3GeV" → [1,2,3])
-        groups: list = []   # 각 그룹: [(에너지값, 위치), ...]
+        # GeV로 끝나는 숫자 목록을 에너지 그룹으로 묶는다.
+        groups: list = []   # [(에너지 값, 위치), ...]
         plains: list = []   # (값, 위치)
-        chain: list = []    # 나열 구분자로 이어지는 중인 plain 숫자들
+        chain: list = []    # 연결 중인 일반 숫자 목록
         prev_end = None
         for v, s, e, is_energy in tokens:
             linked = bool(chain) and prev_end is not None and bool(self._ENUM_SEP.match(normalized[prev_end:s]))
@@ -532,19 +454,18 @@ When ALL energies are completed, the SYSTEM sends the completion message and end
             return None
         all_energies = [ev for g in groups for ev, _ in g]
         if len(set(all_energies)) != len(all_energies):
-            return None  # 중복 에너지 → 애매
+            return None  # 중복 에너지는 확정할 수 없다.
 
-        # 2) 이벤트 수 짝짓기
+        # 에너지 그룹별 이벤트 수를 연결한다.
         events_map: Optional[Dict[float, int]] = None
-        # 2a) "모두/각각/씩 N개" — 하나의 숫자를 모든 에너지에 적용
+        # 공통 이벤트 수 표현은 모든 에너지에 적용한다.
         if len(plains) == 1 and re.search(r'모두|각각|씩|전부|다\s|all', text):
             events_map = {ev: int(plains[0][0]) for ev in all_energies}
         else:
-            # 2b) 첫 에너지 그룹 앞에 숫자가 있으면 순서가 애매 → 포기
+            # 첫 에너지 앞의 숫자는 용도를 확정할 수 없다.
             if any(p_pos < groups[0][0][1] for _, p_pos in plains):
                 return None
-            # 각 그룹 구간(그룹 끝 ~ 다음 그룹 시작)에 plain 숫자가 정확히 1개일 때만 확정
-            # 그룹 멤버 전원이 그 숫자를 공유 ("1,2,3GeV 10000개" → 셋 다 10000)
+            # 각 그룹 뒤의 단일 숫자를 그룹 전체의 이벤트 수로 사용한다.
             bounds = [g[0][1] for g in groups] + [float('inf')]
             events_map = {}
             for i, g in enumerate(groups):
@@ -555,19 +476,19 @@ When ALL energies are completed, the SYSTEM sends the completion message and end
                 for ev, _ in g:
                     events_map[ev] = int(seg[0])
 
-        # 3) DAQ config 이름 배정: 첫 그룹 앞 → 전체(전역), 그룹 구간 안 → 그 그룹만
+        # DAQ 설정 이름을 전체 또는 개별 에너지 그룹에 배정한다.
         group_starts = [g[0][1] for g in groups]
         global_cfg: Optional[str] = None
         seg_cfgs: Dict[int, str] = {}
         for name, pos in config_tokens:
             if pos < group_starts[0]:
                 if global_cfg is not None:
-                    return None  # 전역 config 이름이 2개 → 애매
+                    return None  # 전역 설정 이름은 하나만 허용한다.
                 global_cfg = name
             else:
                 gi = max(i for i, s in enumerate(group_starts) if s <= pos)
                 if gi in seg_cfgs:
-                    return None  # 한 구간에 config 이름이 2개 → 애매
+                    return None  # 그룹별 설정 이름은 하나만 허용한다.
                 seg_cfgs[gi] = name
 
         pairs: Dict[float, tuple] = {}
@@ -588,7 +509,7 @@ When ALL energies are completed, the SYSTEM sends the completion message and end
         if not isinstance(ec, dict):
             return None
 
-        # ── 1) 자동 교정: 코드가 짝을 확정할 수 있는 경우 ──
+        # 확정 가능한 에너지와 이벤트 쌍으로 상태를 교정한다.
         pairs = self._parse_config_pairs(self._last_user_input)
         if pairs:
             corrected = {}
@@ -611,13 +532,13 @@ When ALL energies are completed, the SYSTEM sends the completion message and end
             if llm_pairs != code_pairs:
                 self.log(f"energy_config 자동 교정(입력 짝 기준): LLM {llm_pairs} → {code_pairs}")
             updates["energy_config"] = corrected
-            updates.pop("scan_order", None)  # _update_state가 재계산
+            updates.pop("scan_order", None)  # 상태 반영 시 다시 계산한다.
             return None
 
-        # ── 2) 폴백: 출처 검증 (입력에 등장하지 않는 숫자 거부) ──
+        # 자동 확정이 불가능하면 입력 원문과 숫자를 대조한다.
         allowed = self._numbers_in_last_input()
         if not allowed:
-            return None  # 대조할 입력이 없으면 통과 (기존 동작 유지)
+            return None  # 비교할 입력이 없으면 검증을 생략한다.
         for energy_key, cfg in ec.items():
             try:
                 e = float(energy_key)
@@ -659,8 +580,7 @@ When ALL energies are completed, the SYSTEM sends the completion message and end
                     except (ValueError, TypeError):
                         int_key = energy_key
                     if int_key in self.state['energy_config'] and isinstance(config_value, dict):
-                        # target_events(파서 설정), completed/runs/collected_events(코드 소유)는
-                        # LLM이 변경 불가. 완료 표시는 _on_user_input(plot 확인)에서만 일어난다.
+                        # 이벤트 수와 진행 상태는 코드에서 관리한다.
                         safe_update = {
                             k: v for k, v in config_value.items()
                             if k not in ('target_events', 'completed', 'completed_at', 'runs', 'collected_events')
@@ -691,33 +611,10 @@ When ALL energies are completed, the SYSTEM sends the completion message and end
                 self.state[key] = value
                 self.log(f"State updated: {key} = {value}")
 
-        # config → idle 전환(STEP 0b 완료) 시 파싱 결과를 코드가 echo
+        # 설정 완료 시 확정된 값을 사용자에게 알린다.
         if _was_config and self.state.get("phase") == "idle" and self.state.get("energy_config"):
             self._echo_parsed_config()
 
-    def _extract_run_number(self, daq_output: str = None) -> Optional[int]:
-        """Run number 추출 (runnum.txt → fallback: DAQ output 파싱)"""
-        try:
-            from tools.config_loader import get_path_config
-            runnum_file = Path(get_path_config("RunNumberFile"))
-            if runnum_file.exists():
-                with open(runnum_file, 'r') as f:
-                    # Run이 종료된 후 runnum.txt가 다음 번호로 업데이트되므로, 
-                    # 방금 종료된 Run 정보를 위해 -1을 수행함
-                    val = f.read().strip()
-                    run_number = int(val) - 1
-                    return run_number
-        except Exception as e:
-            self.log(f"Run number 읽기 실패: {e}")
-        
-        if daq_output:
-            import re
-            match = re.search(r'Run:?\s*(\d+)', daq_output)
-            if match:
-                return int(match.group(1))
-        
-        return None
-    
     def _format_progress(self) -> str:
         """현재 진행 상황을 문자열로 반환 (AI 메시지용)"""
         total = len(self.state['scan_order'])
@@ -739,4 +636,3 @@ When ALL energies are completed, the SYSTEM sends the completion message and end
                 lines.append(f"       {energy} GeV   {format_event_count(config.get('target_events',0))} events{cfg_suffix}")
         lines.append("─" * 36)
         return "\n".join(lines)
-

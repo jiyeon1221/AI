@@ -6,7 +6,7 @@ from typing import Dict, Any, Optional
 from .config_loader import load_config
 
 
-# ======================= Tower Layout =======================
+# 타워 배치.
 """
 타워 레이아웃 (3x3 그리드):
 
@@ -20,7 +20,7 @@ T5가 중심이며, 다른 타워들은 SWITCH 함수를 통해 오프셋 계산
 VALID_TOWERS = ["T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9"]
 
 
-# ======================= Position Calculator =======================
+# 타워 위치 계산기.
 
 class PositionCalculator_Sym:
     """타워 위치 계산기 — 대칭 모듈용 (스프레드시트 수식 구조 반영)"""
@@ -108,10 +108,10 @@ class PositionCalculator_Sym:
         if tilting is None:
             tilting = self.tilting
 
-        b45 = self._tower_offset_x(tower)  # B45 = B43
-        c45 = self._tower_offset_y(tower)  # C45 = C43
+        b45 = self._tower_offset_x(tower)  # X축 타워 오프셋.
+        c45 = self._tower_offset_y(tower)  # Y축 타워 오프셋.
 
-        # Rotation 보정 (B46)
+        # 회전 보정.
         if rotation != 0.0:
             base_rad = math.radians(self.rotation_axis_angle)
             rot_rad = math.radians(rotation)
@@ -121,7 +121,7 @@ class PositionCalculator_Sym:
         else:
             x = b45 + self.offset_x
 
-        # Tilting 보정 (C46)
+        # 기울기 보정.
         tilt_rad = math.radians(tilting)
         tilting_correction = (
             self.center_to_bottom * math.cos(tilt_rad)
@@ -159,140 +159,12 @@ class PositionCalculator_Sym:
         }
 
 
-# ======================= Unsymmetric Position Calculator =======================
-
-class PositionCalculator:
-    """
-    타워 위치 계산기 — 비대칭 모듈용
-
-    모듈 크기가 모두 다를 경우 사용.
-    TowerWidth/TowerHeight 기반 균일 간격 대신,
-    센터 타워(T5)로부터 각 타워까지의 x,y 거리를 아래 TOWER_OFFSETS에 직접 기재한다.
-
-    Rotation/Tilting 보정 방식은 PositionCalculator와 동일.
-    """
-
-    # ── 타워별 T5 기준 상대 거리 (mm) ── 직접 수정하세요 ──────────────────
-    #   T1  T2  T3
-    #   T4  T5  T6
-    #   T7  T8  T9
-    TOWER_OFFSETS: Dict[str, Dict[str, float]] = {
-        "T1": {"dx":  46.75, "dy":  -49.0},
-        "T2": {"dx":  0.5, "dy":  -46.75},
-        "T3": {"dx":  -44.75, "dy":  -48.5},
-        "T4": {"dx":  44.75, "dy":  0.5},
-        "T5": {"dx":  0.0, "dy":  0.0},
-        "T6": {"dx":  -45.0, "dy":  0.5},
-        "T7": {"dx":  45.75, "dy":  50.25},
-        "T8": {"dx":  -0.25, "dy":  47.5},
-        "T9": {"dx":  -45.5, "dy": 49.75},
-    }
-    # ──────────────────────────────────────────────────────────────────────
-
-    def __init__(self):
-        config = load_config()
-
-        pos_scan   = config.get("PositionScan")    or {}
-        pos_consts = config.get("PositionConstants") or {}
-
-        for key in ["OffsetX", "OffsetY"]:
-            if pos_scan.get(key) is None:
-                raise RuntimeError(
-                    f"config_general.yml PositionScan.{key} 가 정의되지 않았습니다."
-                )
-
-        for key in ["RotationAxisAngle", "RotationAxisDist", "CenterToBottom", "AxisToModule"]:
-            if pos_consts.get(key) is None:
-                raise RuntimeError(
-                    f"config_general.yml PositionConstants.{key} 가 정의되지 않았습니다."
-                )
-
-        self.offset_x = float(pos_scan["OffsetX"])
-        self.offset_y = float(pos_scan["OffsetY"])
-
-        self.rotation_axis_angle = float(pos_consts["RotationAxisAngle"])
-        self.rotation_axis_dist  = float(pos_consts["RotationAxisDist"])
-        self.center_to_bottom    = float(pos_consts["CenterToBottom"])
-        self.axis_to_module      = float(pos_consts["AxisToModule"])
-
-        self.rotation = 0.0
-        self.tilting  = 0.0
-
-    def calculate_tower_position(self, tower: str,
-                                  rotation: Optional[float] = None,
-                                  tilting: Optional[float] = None) -> Dict[str, float]:
-        """
-        특정 타워의 중심 위치 계산 (Rotation/Tilting 적용)
-
-        계산 구조:
-        - dx, dy = TOWER_OFFSETS[tower]  (T5 기준 상대 거리)
-        - x = offset_x + dx + rotation_term
-        - y = offset_y + dy * cos(θ)
-              - ( center_to_bottom * cos(θ) + axis_to_module * sin(θ) - center_to_bottom )
-        """
-        tower = tower.upper()
-        if tower not in VALID_TOWERS:
-            raise ValueError(f"유효하지 않은 타워: {tower}. {VALID_TOWERS} 중 하나여야 합니다.")
-
-        if rotation is None:
-            rotation = self.rotation
-        if tilting is None:
-            tilting = self.tilting
-
-        dx = self.TOWER_OFFSETS[tower]["dx"]
-        dy = self.TOWER_OFFSETS[tower]["dy"]
-
-        # Rotation 보정
-        if rotation != 0.0:
-            base_rad = math.radians(self.rotation_axis_angle)
-            rot_rad  = math.radians(rotation)
-            rotation_term = (self.rotation_axis_dist * math.sin(base_rad + rot_rad)
-                             - self.rotation_axis_dist * math.sin(base_rad))
-            x = dx + self.offset_x + rotation_term
-        else:
-            x = dx + self.offset_x
-
-        # Tilting 보정
-        tilt_rad = math.radians(tilting)
-        tilting_correction = (
-            self.center_to_bottom * math.cos(tilt_rad)
-            + self.axis_to_module * math.sin(tilt_rad)
-            - self.center_to_bottom
-        )
-        y = self.offset_y + dy * math.cos(tilt_rad) - tilting_correction
-
-        return {"x": x, "y": y}
-
-    def calculate_all_positions(self, rotation: Optional[float] = None,
-                                 tilting: Optional[float] = None) -> Dict[str, Dict[str, float]]:
-        """모든 타워의 위치 계산"""
-        return {
-            tower: self.calculate_tower_position(tower, rotation, tilting)
-            for tower in self.TOWER_OFFSETS
-        }
-
-    def get_status(self) -> Dict[str, Any]:
-        """현재 상태 확인"""
-        return {
-            "offset_x": self.offset_x,
-            "offset_y": self.offset_y,
-            "tower_offsets": self.TOWER_OFFSETS,
-            "constants": {
-                "rotation_axis_angle": self.rotation_axis_angle,
-                "rotation_axis_dist":  self.rotation_axis_dist,
-                "center_to_bottom":    self.center_to_bottom,
-                "axis_to_module":      self.axis_to_module,
-            },
-            "all_positions": self.calculate_all_positions(),
-        }
-
-
-# ======================= Global Calculator =======================
+# 공유 계산기 인스턴스.
 
 _position_calculator = PositionCalculator_Sym()
 
 
-# ======================= Direct Access Functions =======================
+# 직접 호출용 함수.
 
 def calculate_position(tower: str) -> Dict[str, float]:
     """직접 접근용 함수 (tool decorator 없이)"""

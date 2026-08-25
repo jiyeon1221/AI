@@ -1,59 +1,139 @@
 #!/usr/bin/env python3
-"""DQM Tool — C++ monit 실행으로 ROOT 파일 생성"""
+"""DQM Tool — C++ monit 실행으로 ROOT 파일 생성.
+
+경로·파일명·monit 인자 규칙도 여기 둔다. monit을 부르거나 그 산출물을 찾는 쪽은
+이 모듈을 import한다. 규칙이 바뀌면 여기만 고치면 된다.
+"""
+
+from __future__ import annotations
 
 import os
 import re
+import signal
 import subprocess
-import shutil
-from typing import Dict, Any
 from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from .base_tool import BaseTool
-from .config_loader import get_path_config
-
-
-# ===== DQM 설정 (Config from YAML) =====
-DQM_DIR = get_path_config("DqmDir")
-MONIT_EXECUTABLE = os.path.join(DQM_DIR, "monit")  # compile.sh로 생성됨
-DQM_OUTPUT_DIR = os.path.join(DQM_DIR, "output")
-
 from .config_loader import CONFIG_FILE as CONFIG_YML_PATH
+from .config_loader import get_dqm_dir, get_dqm_output_dir
 
 
-os.makedirs(DQM_OUTPUT_DIR, exist_ok=True)
+# DQM 경로, 파일명, monit 명령.
+DQM_DIR: Path = get_dqm_dir()
+OUTPUT_DIR: Path = get_dqm_output_dir()
+MONIT_BIN: Path = DQM_DIR / "monit"
+MONIT_EXECUTABLE = str(MONIT_BIN)
+DQM_OUTPUT_DIR = str(OUTPUT_DIR)
+
+# monit이 지원하는 불리언 플래그.
+MONIT_FLAGS = ("LIVE", "AUXcut", "AUX")
+
+DEFAULT_HEATMAP_MODULE = "MCPPMT"
+
+
+def base_prefix(run_number: int, type_: str, method: str, module: str = "") -> str:
+    """monit이 만드는 산출물 이름의 공통 앞부분 (확장자 없음).
+
+    single은 C++ 쪽 fModule이 빈 문자열이라 접미 언더스코어가 하나 남는다.
+    """
+    if type_ == "full":
+        return f"Run{run_number}_full_{method}"
+    if type_ in ("heatmap", "module"):
+        return f"Run{run_number}_{type_}_{method}_{module or DEFAULT_HEATMAP_MODULE}"
+    return f"Run{run_number}_single_{method}_"
+
+
+def root_filename(run_number: int, type_: str, method: str, module: str = "") -> str:
+    return f"{base_prefix(run_number, type_, method, module)}.root"
+
+
+def live_base_prefix(run_number: int, type_: str, method: str, aux_cut: bool = False) -> str:
+    """--LIVE로 돌 때 monit이 갱신하는 번들 이름. AUXcut이면 접미가 붙는다."""
+    prefix = f"Run{run_number}_{type_}_{method}"
+    return f"{prefix}_AuxCut" if aux_cut else prefix
+
+
+def run_artifact_patterns(run_number: int) -> tuple:
+    """해당 run이 남긴 모든 산출물 glob 패턴 (오래된 플롯 정리용)."""
+    return (f"Run{run_number}_*.root", f"Run{run_number}_*.gif")
+
+
+def build_monit_command(
+    run_number: int,
+    *,
+    type_: str = "full",
+    method: str = "IntADC",
+    modules: Optional[Sequence[str]] = None,
+    max_event: Optional[int] = None,
+    flags: Iterable[str] = (),
+    aux_cut_mode: Optional[str] = None,
+    aux_mode: Optional[str] = None,
+) -> List[str]:
+    """monit 실행 인자를 조립한다."""
+    flags = tuple(flags)
+    cmd = [
+        str(MONIT_BIN),
+        "--RunNumber", str(run_number),
+        "--Config", str(CONFIG_YML_PATH),
+        "--type", type_,
+        "--method", method,
+    ]
+    if modules:
+        cmd.extend(["--module"] + list(modules))
+    if max_event:
+        cmd.extend(["--MaxEvent", str(max_event)])
+    for flag in flags:
+        if flag in MONIT_FLAGS:
+            cmd.append(f"--{flag}")
+    # AUXcut은 AUX 플롯 없이도 적용할 수 있다.
+    if aux_cut_mode and aux_cut_mode != "none":
+        cmd.extend(["--AUXCutMode", aux_cut_mode])
+    # AUX 범위 옵션은 AUX 플롯과 함께 사용한다.
+    if "AUX" in flags and aux_mode in ("WC", "Hodo", "WCHodo"):
+        cmd.extend(["--AUXMode", aux_mode])
+    return cmd
+
+
+def kill_process_group(proc: subprocess.Popen, grace: float = 5.0) -> None:
+    """monit은 graceful 종료 경로가 없어 프로세스 그룹째 SIGTERM → SIGKILL 한다.
+
+    os.setpgrp로 띄운 프로세스에만 쓸 것.
+    """
+    if proc is None or proc.poll() is not None:
+        return
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        proc.terminate()
+    try:
+        proc.wait(timeout=grace)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            proc.kill()
+        proc.wait()
 
 
 class DQMPlotTool(BaseTool):
     """DQM Plot 생성 Tool"""
-    
+
     def __init__(self):
         super().__init__(
             name="dqm_plot_tool",
             description="Generate DQM plots for test-beam data analysis"
         )
-        
+
         os.makedirs(DQM_OUTPUT_DIR, exist_ok=True)
-    
+
     @staticmethod
     def _normalize_module(name: str) -> str:
         """T1S → T1-S, T3C → T3-C. Leaves T1, MCPPMT, T1-S unchanged."""
         return re.sub(r'^(T\d)([SC])$', r'\1-\2', name)
 
     def execute(self, params: Dict[str, Any]) -> str:
-        """
-        DQM Plot 생성
-
-        Args:
-            params:
-                - run_number (int): Run 번호
-                - method (str, optional): 'IntADC' | 'PeakADC' (기본: IntADC)
-                - type (str, optional): 'full'|'heatmap'|'module'|'single' (기본: full)
-                - modules (list, optional): single → 채널 목록, heatmap/module → ["MCPPMT"]
-                - max_event (int, optional): 처리할 최대 이벤트 수
-
-        Returns:
-            실행 결과 문자열
-        """
+        """Run 번호와 플롯 조건에 맞는 DQM 결과를 생성한다."""
         valid, error = self.validate_params(params, ["run_number"])
         if not valid:
             raise RuntimeError(f"파라미터 오류: {error}")
@@ -81,7 +161,7 @@ class DQMPlotTool(BaseTool):
         if not os.path.exists(CONFIG_YML_PATH):
             raise RuntimeError(f"설정 파일을 찾을 수 없습니다: {CONFIG_YML_PATH}")
 
-        # Resolve module string for heatmap/module (always MCPPMT)
+        # heatmap과 module 유형은 MCPPMT 모듈을 사용한다.
         if type_ in ('heatmap', 'module'):
             module_str = modules[0] if modules else "MCPPMT"
         else:
@@ -101,29 +181,31 @@ class DQMPlotTool(BaseTool):
 
             output_lines.append("⚙️  C++ monit 실행 중...")
 
-            cmd = [
-                MONIT_EXECUTABLE,
-                "--RunNumber", str(run_number),
-                "--Config", str(CONFIG_YML_PATH),
-                "--type", type_,
-                "--method", method,
-            ]
             if type_ in ('heatmap', 'module'):
-                cmd.extend(["--module", module_str])
+                cmd_modules = [module_str]
             elif type_ == "single" and modules:
-                cmd.extend(["--module"] + modules)
+                cmd_modules = modules
+            else:
+                cmd_modules = None
 
             if max_event is not None:
                 try:
                     max_event = int(max_event)
-                    if max_event > 0:
-                        cmd.extend(["--MaxEvent", str(max_event)])
                 except (TypeError, ValueError):
                     output_lines.append(f"⚠️  잘못된 max_event 값: {max_event}, 무시하고 계속 진행")
+                    max_event = None
+
+            cmd = build_monit_command(
+                run_number,
+                type_=type_,
+                method=method,
+                modules=cmd_modules,
+                max_event=max_event,
+            )
 
             result = subprocess.run(
                 cmd,
-                cwd=DQM_DIR,
+                cwd=str(DQM_DIR),
                 capture_output=True,
                 text=True,
                 timeout=600,
@@ -138,26 +220,17 @@ class DQMPlotTool(BaseTool):
             else:
                 output_lines.append("✅ monit 정상 종료")
 
-            # Determine expected ROOT filename
-            if type_ == "full":
-                root_filename = f"Run{run_number}_full_{method}.root"
-            elif type_ in ('heatmap', 'module'):
-                root_filename = f"Run{run_number}_{type_}_{method}_{module_str}.root"
-            else:
-                # single: fModule="" in C++, so trailing underscore in prefix
-                root_filename = f"Run{run_number}_single_{method}_.root"
-
-            dqm_root_file = os.path.join(DQM_OUTPUT_DIR, root_filename)
-            if not os.path.exists(dqm_root_file):
-                # Also accept any matching ROOT file (single type may have different suffix)
+            expected = root_filename(run_number, type_, method, module_str)
+            if not (OUTPUT_DIR / expected).exists():
+                # single 유형의 다른 접미사도 허용한다.
                 root_pattern = f"Run{run_number}_{type_}_{method}*.root"
-                matches = list(Path(DQM_OUTPUT_DIR).glob(root_pattern))
+                matches = list(OUTPUT_DIR.glob(root_pattern))
                 if matches:
-                    root_filename = matches[0].name
+                    expected = matches[0].name
                 else:
                     raise RuntimeError("ROOT 파일이 생성되지 않았습니다")
 
-            output_lines.append(f"📁 ROOT 파일: {root_filename}")
+            output_lines.append(f"📁 ROOT 파일: {expected}")
             output_lines.append("")
             output_lines.append("✅ DQM Plot 생성 완료!")
 

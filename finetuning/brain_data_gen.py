@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
-"""
-Training data generator for BrainAgent
-- Single-turn: state + user request  →  tool call JSON
-- Covers all tool types × expression variety × state combinations
-- Target: daq_run 150, dqm_plot 600+250+170, run_log 150+70, hv_read 190, hv_write 240, motor_move 70, hodoscope_write 45, none 150
-- hodoscope_hv_read merged into hv_read (hv_read now shows CAEN HV + Hodoscope combined)
-"""
+"""BrainAgent의 요청 해석과 도구 선택 학습 데이터를 생성한다."""
 
 import json
 import random
+import sys
 from pathlib import Path
 from typing import List, Dict, Any
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from agents.base_agent import build_prompt_context
+from finetuning.data_gen_common import (
+    make_example as _make_example,
+    write_dataset,
+)
 
 
 SYSTEM_PROMPT = """You are the Brain Agent for a test beam experiment (KEK/CERN).
@@ -134,31 +136,18 @@ def _build_state_context(state: dict) -> str:
 
 
 def build_full_context(state: dict, user_input: str) -> str:
-    parts = []
-    parts.append("=== Current State ===")
-    parts.append(_build_state_context(state))
-    parts.append("")
-    parts.append("=== Recent Conversation ===")
-    parts.append("(No conversation yet)")
-    parts.append("")
-    parts.append("=== Current User Input ===")
-    parts.append(user_input)
-    parts.append("")
-    parts.append("=== Your Task ===")
-    parts.append("Based on the current state and conversation, decide the next action.")
-    parts.append("Output JSON with tool name and parameters.")
-    return "\n".join(parts)
+    # Brain은 single-turn 학습이라 history 없이 생성한다.
+    return build_prompt_context(
+        _build_state_context(state),
+        [],
+        current_input=user_input,
+    )
 
 
 def make_example(state: dict, user_input: str, decision: dict) -> dict:
-    ctx = build_full_context(state, user_input)
-    return {
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": ctx},
-            {"role": "assistant", "content": json.dumps(decision, ensure_ascii=False)},
-        ]
-    }
+    return _make_example(
+        SYSTEM_PROMPT, build_full_context(state, user_input), decision
+    )
 
 
 # ── Random state generators ─────────────────────────────────────────────────
@@ -1848,21 +1837,12 @@ def gen_unclear() -> List[dict]:
     return examples
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  DQM PLOT — overlay + relative + no-dash channel names
-#
-#  Covers three gaps the existing gen_dqm_plot() misses:
-#  1. Relative reference ("방금"/"이번 런") + specific channel  → must use current_run
-#  2. "overlay" keyword  → type: single (users say "T1S overlay" for single-channel plot)
-#  3. No-dash input ("T1S", "T2C")  → model must output ["T1-S"], ["T2-C"] with hyphen
-# ══════════════════════════════════════════════════════════════════════════════
+# 현재 런의 단일 채널, overlay, 하이픈 없는 채널명 사례를 생성한다.
 
 def gen_dqm_overlay_relative_single() -> List[dict]:
     examples = []
 
-    # ── A. Relative reference + single channel (120) ──────────────────────────
-    #    User says "방금 run T1S overlay" or "이번 런 T1-S 그려줘"
-    #    → must resolve to current_run, type: single, modules with hyphen
+    # 현재 런을 참조하는 단일 채널 사례.
     rel_single_tmpl = [
         # hyphenated channel
         "방금 {ch} 그려줘",           "이번 런 {ch} 그려줘",
@@ -1960,18 +1940,10 @@ def gen_dqm_overlay_relative_single() -> List[dict]:
     return examples
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  DQM PLOT — relative reference using last_run
-#
-#  Covers two gaps:
-#  1. No scenario running, only "Last completed run" in state (brain standalone DAQ)
-#     → "방금/이전/직전" must resolve to last_run
-#  2. Scenario running, user explicitly says "이전/직전/전 런"
-#     → must resolve to last_run (NOT current_run)
-# ══════════════════════════════════════════════════════════════════════════════
+# 직전 완료 런을 참조하는 DQM 사례를 생성한다.
 
 def _make_brain_daq_state():
-    """Simulates state after brain-initiated standalone DAQ: no scenario, only last_run."""
+    """Brain 단독 DAQ가 완료된 상태를 만든다."""
     return {"last_run": _random_run()}
 
 
@@ -2286,9 +2258,6 @@ def gen_dqm_ask_method() -> List[dict]:
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
-    output_file = Path(__file__).parent / "data" / "brain_data.json"
-    output_file.parent.mkdir(parents=True, exist_ok=True)
-
     all_examples = []
     all_examples.extend(gen_daq_run())                      # 150
     all_examples.extend(gen_dqm_plot())                     # 600  (full 350 + heatmap 100 + single 150)
@@ -2309,16 +2278,9 @@ def main():
 
     random.shuffle(all_examples)
 
-    with open(output_file, "w", encoding="utf-8") as f:
-        for ex in all_examples:
-            f.write(json.dumps(ex, ensure_ascii=False) + "\n")
-
-    lengths = [sum(len(m["content"]) for m in ex["messages"]) for ex in all_examples]
-    max_chars = max(lengths)
-    avg_chars = sum(lengths) / len(lengths)
-    print(f"Generated {len(all_examples)} samples -> {output_file}")
-    print(f"   char len  max={max_chars:,}  avg={avg_chars:,.0f}  "
-          f"(≈token max={max_chars // 2:,}  avg={avg_chars // 2:,.0f})")
+    lengths = write_dataset("brain_data.json", all_examples)
+    max_chars, avg_chars = max(lengths), sum(lengths) / len(lengths)
+    print(f"   ≈token    max={max_chars // 2:,}  avg={avg_chars // 2:,.0f}")
 
 
 if __name__ == "__main__":

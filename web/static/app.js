@@ -1,15 +1,15 @@
-/* ── WebSocket ─────────────────────────────────────────────── */
+/* WebSocket 연결. */
 let ws = null;
-let awaitingInput = false;   // true when agent is blocked on get_input()
-let _awaitingInterrupted = false;  // user sent a message while awaitingInput was true
-let _lastAgentMsg = null;          // {text, isBrain} — last AI bubble before awaiting_input
+let awaitingInput = false;         // 에이전트 입력 대기 여부.
+let _awaitingInterrupted = false;  // 입력 대기 중 사용자 메시지 전송 여부.
+let _lastAgentMsg = null;          // 입력 대기 직전 AI 메시지.
 
-/* ── Command history (CLI-style up/down navigation) ────────── */
+/* 위·아래 키로 탐색하는 명령 기록. */
 const _cmdHistory = [];
-let _histIdx = -1;       // -1 = not browsing history
-let _histDraft = '';     // saves current draft when user starts browsing
+let _histIdx = -1;       // -1이면 기록을 탐색하지 않는다.
+let _histDraft = '';     // 탐색 전 작성 중이던 입력.
 let activeAgent = null;
-let _pendingAdhocClear = false;   // cleared on next popup open after user sends a message
+let _pendingAdhocClear = false;   // 다음 별도 요청 팝업을 열 때 내용을 지운다.
 
 function connectWS() {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -27,7 +27,7 @@ function connectWS() {
 
   ws.onclose = () => {
     setStatus('연결 끊김', 'error');
-    setTimeout(connectWS, 2000);   // auto-reconnect
+    setTimeout(connectWS, 2000);   // 2초 후 다시 연결한다.
   };
 
   ws.onerror = () => ws.close();
@@ -38,7 +38,7 @@ function send(obj) {
     ws.send(JSON.stringify(obj));
 }
 
-/* ── rAF message queue ─────────────────────────────────────── */
+/* 화면 프레임 단위 메시지 큐. */
 let _msgQueue   = [];
 let _rafPending = false;
 let _scrollTargets = new Set();
@@ -51,7 +51,7 @@ function _flushQueue() {
   _scrollTargets.clear();
 }
 
-/* ── Message handling ──────────────────────────────────────── */
+/* 서버 메시지 처리. */
 function handleMessage(msg) {
   const isBrain = msg.source === 'brain';
 
@@ -72,7 +72,7 @@ function handleMessage(msg) {
 
     case 'plot':
       if (isBrain) {
-        adhocAppendPlot(msg.filename);   // adhocAppendPlot calls openAdhoc internally
+        adhocAppendPlot(msg.filename);   // 함수 내부에서 팝업을 연다.
       } else {
         appendPlot(msg.filename);
       }
@@ -167,9 +167,9 @@ function handleMessage(msg) {
   }
 }
 
-/* ── User actions ──────────────────────────────────────────── */
+/* 사용자 동작. */
 function addCompleteButton() {
-  removeCompleteButtons();   // only one at a time
+  removeCompleteButtons();   // 완료 버튼은 하나만 표시한다.
   const row = document.createElement('div');
   row.className = 'complete-row';
 
@@ -264,15 +264,15 @@ function sendText() {
   const input = document.getElementById('chat-input');
   const text = input.value.trim();
   if (!text) return;
-  // Save to history (avoid duplicate consecutive entries)
+  // 연속 중복을 제외하고 명령 기록에 저장한다.
   if (_cmdHistory[0] !== text) _cmdHistory.unshift(text);
   _histIdx = -1;
   _histDraft = '';
   input.value = '';
-  _pendingAdhocClear = true;   // next popup open will clear previous results
+  _pendingAdhocClear = true;   // 다음 팝업에서 이전 결과를 지운다.
   appendUserBubble(text);
   send({ type: 'user_input', content: text });
-  // If agent was waiting, remove the inline 완료 button too
+  // 입력 대기 중이면 인라인 완료 버튼도 제거한다.
   if (awaitingInput) _awaitingInterrupted = true;
   removeCompleteButtons();
   awaitingInput = false;
@@ -314,7 +314,7 @@ function openHvCheck() {
   window.open('/hv/check', '_blank', 'width=1100,height=820');
 }
 
-/* ── DOM limits ────────────────────────────────────────────── */
+/* DOM 항목 수 제한. */
 const MAX_BLOCK_LINES  = 400;   // tool-block 한 개 내 최대 줄 수
 const MAX_TOOL_BLOCKS  = 80;    // right-scroll 최대 블록 수
 const MAX_CHAT_NODES   = 120;   // chat-scroll 최대 노드 수
@@ -331,13 +331,13 @@ function trimBlockLines(block) {
     block.textContent = lines.slice(-Math.floor(MAX_BLOCK_LINES / 2)).join('\n');
 }
 
-/* ── Clear helpers ─────────────────────────────────────────── */
+/* 화면 초기화 함수. */
 function clearToolOutput() { rightScroll().innerHTML = ''; }
 function clearChat()       { chatScroll().innerHTML = ''; }
 function clearAdhoc()      { adhocScroll().innerHTML = ''; }
 
-/* ── DOM helpers ───────────────────────────────────────────── */
-let _pendingAgentMsg = null;  // last AI message seen, candidate for re-display
+/* DOM 보조 함수. */
+let _pendingAgentMsg = null;  // 다시 표시할 수 있는 마지막 AI 메시지.
 
 function appendAI(text, isBrain = false) {
   _pendingAgentMsg = { text, isBrain };
@@ -357,7 +357,7 @@ function appendAI(text, isBrain = false) {
   scrollBottom(chatScroll());
 }
 
-/* ── Inline clarify (AI message form in chat) ─────────────── */
+/* 채팅 내부 추가 질문 폼. */
 function showClarifyInChat(question) {
   const div = document.createElement('div');
   div.className = 'ai-bubble brain-bubble clarify-inline';
@@ -488,7 +488,7 @@ function appendPlot(filename) {
   card.className = 'plot-card';
 
   const img = document.createElement('img');
-  // Add timestamp to bust cache if re-generated
+  // 재생성된 파일을 받도록 캐시 키를 추가한다.
   img.src = `/plots/${filename}?t=${Date.now()}`;
   img.alt = filename;
   img.onclick = () => openLightbox(img.src);
@@ -531,7 +531,7 @@ function chatScroll()  { return document.getElementById('chat-scroll'); }
 function rightScroll() { return document.getElementById('right-scroll'); }
 function scrollBottom(el) { _scrollTargets.add(el); }
 
-/* ── Ad-hoc result popup ─────────────────────────────────────── */
+/* 별도 요청 결과 팝업. */
 function adhocScroll() { return document.getElementById('adhoc-scroll'); }
 
 function openAdhoc(clearContent = false) {
@@ -549,37 +549,6 @@ function openAdhoc(clearContent = false) {
 function closeAdhoc() {
   document.getElementById('adhoc-overlay').classList.remove('open');
 }
-
-/* ── Clarify popup ─────────────────────────────────────────── */
-function showClarifyPopup(question) {
-  document.getElementById('clarify-question').textContent = question;
-  document.getElementById('clarify-input').value = '';
-  document.getElementById('clarify-overlay').classList.add('open');
-  setTimeout(() => document.getElementById('clarify-input').focus(), 50);
-}
-
-function closeClarify() {
-  document.getElementById('clarify-overlay').classList.remove('open');
-}
-
-function sendClarify() {
-  const input = document.getElementById('clarify-input');
-  const text = input.value.trim();
-  if (!text) return;
-  closeClarify();
-  appendUserBubble(text);
-  send({ type: 'user_input', content: text });
-}
-
-document.addEventListener('DOMContentLoaded', () => {
-  const clarifyInput = document.getElementById('clarify-input');
-  if (clarifyInput) {
-    clarifyInput.addEventListener('keydown', e => {
-      if (e.key === 'Enter') sendClarify();
-      if (e.key === 'Escape') closeClarify();
-    });
-  }
-});
 
 function adhocAppendToolOutput(text, isError = false) {
   openAdhoc();
@@ -622,7 +591,7 @@ function adhocShowConfirm(preview, _tool, scenarioRunning = false) {
   openAdhoc();
   const scroll = adhocScroll();
 
-  // Remove any existing confirm card (only one at a time)
+  // 기존 확인 카드를 제거한다.
   scroll.querySelectorAll('.adhoc-confirm-card').forEach(el => el.remove());
 
   const card = document.createElement('div');
@@ -712,13 +681,13 @@ function adhocDrawDqmCanvases(base_prefix, canvases) {
   openAdhoc();
   const scroll = adhocScroll();
 
-  // Label header
+  // 플롯 제목.
   const header = document.createElement('div');
   header.className = 'adhoc-tool-block';
   header.textContent = `DQM: ${base_prefix} (${canvases.length} canvas${canvases.length !== 1 ? 'es' : ''})`;
   scroll.appendChild(header);
 
-  // Grid container
+  // 플롯 격자.
   const grid = document.createElement('div');
   grid.className = 'adhoc-dqm-grid';
   scroll.appendChild(grid);
@@ -739,16 +708,13 @@ function adhocDrawDqmCanvases(base_prefix, canvases) {
 
     grid.appendChild(cell);
 
-    // Fetch and draw
+    // ROOT 번들에서 선택한 캔버스를 읽는다.
     (async () => {
-      const filename = `${base_prefix}_${canvas}.json`;
       try {
-        const res = await fetch(`/dqm-output/${filename}?t=${Date.now()}`);
-        if (!res.ok) { drawEl.textContent = 'No data'; return; }
-        const text = await res.text();
         const jsroot = _getJSROOT();
-        const obj = jsroot.parse(text);
-        if (!obj) { drawEl.textContent = 'Parse error'; return; }
+        const file = await jsroot.openFile(`/dqm-output/${base_prefix}.root?t=${Date.now()}`);
+        const obj = await file.readObject(canvas);
+        if (!obj) { drawEl.textContent = 'No data'; return; }
         await jsroot.draw(drawEl, obj, '');
       } catch (e) {
         drawEl.textContent = `ERR: ${e.message || e}`;
@@ -760,7 +726,7 @@ function adhocDrawDqmCanvases(base_prefix, canvases) {
   scroll.scrollTop = scroll.scrollHeight;
 }
 
-/* ── Lightbox ──────────────────────────────────────────────── */
+/* 이미지 확대 보기. */
 function openLightbox(src) {
   document.getElementById('lightbox-img').src = src;
   document.getElementById('lightbox').classList.add('open');
@@ -770,7 +736,7 @@ function closeLightbox() {
 }
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape') {
-    // Close lightbox first, then adhoc popup
+    // 확대 보기를 먼저 닫고 결과 팝업을 닫는다.
     if (document.getElementById('lightbox').classList.contains('open')) {
       closeLightbox();
     } else if (document.getElementById('adhoc-overlay').classList.contains('open')) {
@@ -779,7 +745,7 @@ document.addEventListener('keydown', e => {
   }
 });
 
-/* ── Voice input (faster-whisper via server) ───────────────── */
+/* 서버의 faster-whisper를 사용하는 음성 입력. */
 let mediaRecorder = null;
 let voiceActive = false;
 
@@ -838,15 +804,13 @@ function stopVoice() {
   voiceActive = false;
   document.getElementById('mic-btn').classList.remove('mic-active');
   if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-    mediaRecorder.stop();   // triggers onstop → transcribe
+    mediaRecorder.stop();   // 녹음 종료 후 변환을 시작한다.
     mediaRecorder = null;
   }
 }
 
-/* ── DAQ completion sound ──────────────────────────────────── */
-// Place your audio file at:  web/static/audio/daq_complete.*
-// Supported formats: mp3, wav, ogg, m4a — browser picks the first
-// one it finds.  Falls back to a synthesized chime if no file exists.
+/* DAQ 완료 알림음. */
+// 지원 파일이 없으면 합성 알림음을 사용한다.
 const _DAQ_SOUND_SOURCES = [
   '/static/audio/daq_complete.mp3',
   '/static/audio/daq_complete.wav',
@@ -854,22 +818,18 @@ const _DAQ_SOUND_SOURCES = [
   '/static/audio/daq_complete.m4a',
 ];
 
-// Pre-load audio element on page load for instant playback.
-// Try each source in order; if the browser can't decode it, play()
-// will reject and we fall back to the synthesized chime.
+// 빠른 재생을 위해 지원 음원을 순서대로 미리 불러온다.
 const _daqAudio = new Audio(_DAQ_SOUND_SOURCES[0]);
 _daqAudio.preload = 'auto';
 
-// Web Audio API fallback (synthesized chime)
+// Web Audio API 합성 알림음.
 let _audioCtx = null;
 function _getAudioCtx() {
   if (!_audioCtx)
     _audioCtx = new (window.AudioContext || /** @type {any} */(window).webkitAudioContext)();
   return _audioCtx;
 }
-// Unlock both AudioContext and HTMLAudioElement on the first user
-// interaction. Safari blocks programmatic audio until play() has been
-// called inside a user-gesture handler at least once.
+// 첫 사용자 동작에서 브라우저의 오디오 재생 권한을 활성화한다.
 function _unlockAudio() {
   const ctx = _getAudioCtx();
   if (ctx.state !== 'running') ctx.resume().catch(() => {});
@@ -909,7 +869,7 @@ function _playChimeFallback() {
   }
 }
 
-// Sound on/off toggle — persisted in localStorage
+// 알림음 설정을 localStorage에 저장한다.
 let _soundEnabled = localStorage.getItem('daqSoundEnabled') !== 'false';
 
 function _updateSoundBtn() {
@@ -925,10 +885,7 @@ function toggleSound() {
 
 function playDaqCompleteSound() {
   if (!_soundEnabled) return;
-  // Reuse the single preloaded element instead of `new Audio()` each call.
-  // Firefox (esp. on Linux) caps the number of concurrent media elements,
-  // so repeatedly creating new ones makes play() start failing after a few
-  // plays until they are garbage-collected.
+  // 미리 불러온 단일 오디오 요소를 재사용한다.
   _daqAudio.currentTime = 0;
   _daqAudio.play()
     .then(() => console.log('[autoTB] DAQ sound (mp3) played'))
@@ -938,23 +895,32 @@ function playDaqCompleteSound() {
     });
 }
 
-/* ── DQM live dashboard ─────────────────────────────────────── */
-//
-// dqm_live_start  → setup grid of cells (manifest-driven), reset state
-// dqm_refresh     → re-fetch the JSON for one canvas and JSROOT.redraw it
-// dqm_live_end    → mark the title as ended (cells stay visible)
-//
-// JSROOT is loaded as a module on first use to keep page-load light.
+/* DQM 실시간 대시보드. */
 
 let dqmRun = null;
 let dqmBasePrefix = null;
-let dqmCells = [];                 // canvas names currently in the grid
-const dqmDrawnObjects = new Map(); // canvas name → JSROOT painter (for redraw)
-const dqmDrawing = new Set();      // canvases currently mid-draw (prevent concurrent draws)
+let dqmCells = [];                 // 현재 표시 중인 캔버스 이름.
+const dqmDrawnObjects = new Map(); // 캔버스별 JSROOT painter.
+const dqmDrawing = new Set();      // 그리는 중인 캔버스.
 function _getJSROOT() {
-  // jsroot.js is a UMD bundle loaded via <script> tag → registers as window.JSROOT
+  // script 태그로 로드된 JSROOT 전역 객체를 반환한다.
   if (!window.JSROOT) throw new Error('JSROOT not loaded');
   return window.JSROOT;
+}
+
+// 실시간 캔버스가 공유하는 ROOT 파일 핸들을 캐시한다.
+let _dqmFilePromise = null;
+function _openDqmRoot(bust) {
+  if (!dqmBasePrefix) return Promise.reject(new Error('no basePrefix'));
+  if (bust || !_dqmFilePromise) {
+    const url = `/dqm-output/${dqmBasePrefix}.root?t=${Date.now()}`;
+    // 파일 열기에 실패하면 다음 호출에서 다시 시도한다.
+    _dqmFilePromise = _getJSROOT().openFile(url).catch(err => {
+      _dqmFilePromise = null;
+      throw err;
+    });
+  }
+  return _dqmFilePromise;
 }
 
 function dqmCellsContainer() { return document.getElementById('dqm-cells'); }
@@ -973,6 +939,7 @@ function dqmLiveStart(msg) {
   dqmCells = (msg.cells || []).slice();
   dqmDrawnObjects.clear();
   dqmDrawing.clear();
+  _dqmFilePromise = null;   // 새 세션에서는 파일 캐시를 비운다.
 
   dqmTitleEl().textContent =
     `DQM Live · Run ${dqmRun} · ${msg.method || ''} · ●LIVE`;
@@ -988,7 +955,7 @@ function dqmLiveStart(msg) {
 
 function addDqmCell(canvas) {
   const cont = dqmCellsContainer();
-  // De-dupe
+  // 중복 캔버스를 제거한다.
   if (cont.querySelector(`[data-canvas="${CSS.escape(canvas)}"]`)) return;
 
   const card = document.createElement('div');
@@ -1022,30 +989,27 @@ function addDqmCell(canvas) {
 
   card.onclick = () => openDqmModal(canvas);
 
-  // Remove the empty placeholder if present
+  // 빈 상태 안내를 제거한다.
   const empty = cont.querySelector('.dqm-cell.empty');
   if (empty) empty.remove();
 
   cont.appendChild(card);
 
-  // Attempt initial draw if a JSON file already exists for this canvas
+  // 캔버스의 초기 내용을 그린다.
   _drawCellFromServer(canvas);
 }
 
 async function _drawCellFromServer(canvas) {
-  if (dqmDrawing.has(canvas)) return;   // 이전 draw 아직 진행 중 → 스킵
+  if (dqmDrawing.has(canvas)) return;   // 동시 그리기를 막는다.
   if (!dqmBasePrefix) { console.warn('[DQM] no basePrefix'); return; }
-  const filename = `${dqmBasePrefix}_${canvas}.json`;
   const drawEl = document.getElementById(`dqm-draw-${canvas}`);
   if (!drawEl) { console.warn('[DQM] no drawEl for', canvas); return; }
   dqmDrawing.add(canvas);
   try {
-    const res = await fetch(`/dqm-output/${filename}?t=${Date.now()}`);
-    if (!res.ok) { console.warn('[DQM]', filename, 'HTTP', res.status); return; }
-    const text = await res.text();
+    const file = await _openDqmRoot(false);
+    const obj = await file.readObject(canvas);
+    if (!obj) { console.warn('[DQM] canvas not in file yet:', canvas); return; }
     const jsroot = _getJSROOT();
-    const obj = jsroot.parse(text);
-    if (!obj) { console.warn('[DQM] parse returned null for', filename); return; }
     await jsroot.cleanup(drawEl);
     await jsroot.draw(drawEl, obj, '');
     dqmDrawnObjects.set(canvas, obj);
@@ -1058,18 +1022,24 @@ async function _drawCellFromServer(canvas) {
   }
 }
 
-function dqmRefresh(msg) {
-  // Only redraw if this canvas is currently shown
-  if (!dqmCells.includes(msg.canvas)) return;
-  _drawCellFromServer(msg.canvas);
+async function dqmRefresh(msg) {
+  // 갱신된 ROOT 파일을 다시 열고 모든 캔버스를 그린다.
+  if (!dqmBasePrefix) return;
+  try {
+    await _openDqmRoot(true);
+  } catch (e) {
+    console.warn('[DQM] refresh reopen failed', e);
+    return;
+  }
+  dqmCells.forEach(c => _drawCellFromServer(c));
 }
 
 function dqmLiveEnd(msg) {
   dqmTitleEl().textContent = `DQM · Run ${msg.run_number} · 종료`;
-  // Cells stay so the operator can still browse the final state.
+  // 종료 후에도 마지막 캔버스를 유지한다.
 }
 
-/* ── DQM modal (click-to-zoom) ──────────────────────────────── */
+/* DQM 캔버스 확대 보기. */
 async function openDqmModal(canvas) {
   if (!dqmBasePrefix) return;
   document.getElementById('dqm-modal-title').textContent = canvas;
@@ -1078,20 +1048,14 @@ async function openDqmModal(canvas) {
   const modalEl = document.getElementById('dqm-modal-draw');
   modalEl.innerHTML = '';
 
-  const filename = `${dqmBasePrefix}_${canvas}.json`;
   try {
-    const res = await fetch(`/dqm-output/${filename}?t=${Date.now()}`);
-    if (!res.ok) {
+    const file = await _openDqmRoot(false);
+    const obj = await file.readObject(canvas);
+    if (!obj) {
       modalEl.textContent = '아직 데이터가 생성되지 않았습니다.';
       return;
     }
-    const text = await res.text();
     const jsroot = _getJSROOT();
-    const obj = jsroot.parse(text);
-    if (!obj) {
-      modalEl.textContent = '유효하지 않은 DQM 데이터입니다.';
-      return;
-    }
     await jsroot.draw(modalEl, obj, '');
   } catch (e) {
     console.error('[DQM] modal draw failed', e);
@@ -1105,7 +1069,7 @@ function closeDqmModal() {
   document.getElementById('dqm-modal-draw').innerHTML = '';
 }
 
-/* ── DQM "add canvas" picker ────────────────────────────────── */
+/* DQM 캔버스 추가 선택기. */
 async function openDqmPicker() {
   if (!dqmRun) {
     alert('DQM live 세션이 아직 시작되지 않았습니다.');
@@ -1115,24 +1079,29 @@ async function openDqmPicker() {
   const list = document.getElementById('dqm-picker-list');
   list.innerHTML = '<div class="dqm-picker-item disabled">불러오는 중…</div>';
   try {
-    const res = await fetch(`/api/dqm/canvases/${dqmRun}`);
-    const items = await res.json();
+    // ROOT 번들의 TKey에서 캔버스 목록을 읽는다.
+    const file = await _openDqmRoot(true);
+    const keys = (file.fKeys || []).filter(k => {
+      const cls = k.fClassName || '';
+      return cls !== 'TList' && cls.indexOf('StreamerInfo') < 0;
+    });
     list.innerHTML = '';
-    if (!items.length) {
+    if (!keys.length) {
       list.innerHTML = '<div class="dqm-picker-item disabled">아직 생성된 캔버스가 없습니다.</div>';
       return;
     }
-    items.forEach(it => {
+    keys.forEach(k => {
+      const name = k.fName;
       const div = document.createElement('div');
       div.className = 'dqm-picker-item';
-      const already = dqmCells.includes(it.canvas);
+      const already = dqmCells.includes(name);
       if (already) div.classList.add('disabled');
-      div.innerHTML = `${it.canvas}` +
-        `<div class="meta">${it.type} · ${it.method}${already ? ' · 추가됨' : ''}</div>`;
+      div.innerHTML = `${name}` +
+        `<div class="meta">${k.fClassName || ''}${already ? ' · 추가됨' : ''}</div>`;
       if (!already) {
         div.onclick = () => {
-          dqmCells.push(it.canvas);
-          addDqmCell(it.canvas);
+          dqmCells.push(name);
+          addDqmCell(name);
           closeDqmPicker();
         };
       }
@@ -1160,7 +1129,7 @@ document.addEventListener('DOMContentLoaded', () => {
   if (ffBtn)  ffBtn.onclick  = openDqmFreeform;
   if (hvCheckBtn) hvCheckBtn.onclick = openHvCheck;
 
-  // Initialize empty placeholder
+  // 빈 상태 안내를 표시한다.
   const cont = document.getElementById('dqm-cells');
   if (cont && cont.children.length === 0) {
     const div = document.createElement('div');
@@ -1170,7 +1139,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 });
 
-// Extend Escape handler to also close DQM modal/picker
+// Escape 키로 DQM 팝업도 닫는다.
 document.addEventListener('keydown', e => {
   if (e.key !== 'Escape') return;
   const modal = document.getElementById('dqm-modal');
@@ -1179,7 +1148,7 @@ document.addEventListener('keydown', e => {
   if (picker && picker.classList.contains('open')) { closeDqmPicker(); return; }
 });
 
-/* ── Motor position polling (every 10 s) ───────────────────── */
+/* 10초 간격 모터 위치 조회. */
 function _updateMotorBar(text) {
   const bar = document.getElementById('motor-pos-bar');
   if (bar) bar.textContent = 'Motor: ' + text;
@@ -1195,11 +1164,11 @@ async function _pollMotorPosition() {
   }
 }
 
-// Poll immediately on load, then every 10 seconds
+// 로드 직후 조회하고 10초마다 반복한다.
 _pollMotorPosition();
 setInterval(_pollMotorPosition, 10000);
 
-/* ── Chat input: Enter / Up / Down key handling ─────────────── */
+/* 채팅 입력의 Enter와 위·아래 키 처리. */
 (function () {
   const input = document.getElementById('chat-input');
   if (!input) return;
@@ -1212,10 +1181,10 @@ setInterval(_pollMotorPosition, 10000);
     if (e.key === 'ArrowUp') {
       if (_cmdHistory.length === 0) return;
       e.preventDefault();
-      if (_histIdx === -1) _histDraft = input.value;   // save draft
+      if (_histIdx === -1) _histDraft = input.value;   // 현재 입력을 보관한다.
       _histIdx = Math.min(_histIdx + 1, _cmdHistory.length - 1);
       input.value = _cmdHistory[_histIdx];
-      // Move cursor to end
+      // 커서를 입력 끝으로 옮긴다.
       requestAnimationFrame(() => { input.selectionStart = input.selectionEnd = input.value.length; });
       return;
     }
@@ -1229,15 +1198,15 @@ setInterval(_pollMotorPosition, 10000);
   });
 })();
 
-/* ── Tower Picker ──────────────────────────────────────────── */
-// 3×3 grid layout (row-major)
+/* 타워 선택기. */
+// 행 우선 3×3 배치.
 const TOWER_GRID = [
   ['T1','T2','T3'],  // row 0
   ['T4','T5','T6'],  // row 1
   ['T7','T8','T9'],  // row 2
 ];
 
-// Full serpentine order (for sorting selected subset) — agents.agent_runner.TOWER_ORDER와 동일
+// 선택 항목 정렬용 지그재그 순서.
 const SERPENTINE_ORDER = [
   ...TOWER_GRID[0],
   ...[...TOWER_GRID[1]].reverse(),
@@ -1248,7 +1217,7 @@ let _towerPickerAgent = null;
 let _towerPickerMulti = false;
 let _towerSelected = new Set();
 let _towerDragging = false;
-let _towerDragMode = null; // 'select' | 'deselect'
+let _towerDragMode = null; // 선택 또는 해제.
 
 const POSITION_AGENTS = ['position_scan', 'position_scan_sim'];
 let _posDirection = null;   // 'horizontal' | 'vertical' | 'both'
@@ -1312,7 +1281,7 @@ function _buildTowerGrid() {
         _towerDragging = true;
         const isSelected = _towerSelected.has(tower);
         if (!_towerPickerMulti) {
-          // single-select: just toggle to this one
+          // 단일 선택은 현재 타워만 토글한다.
           _towerSelected.clear();
           document.querySelectorAll('.tower-cell').forEach(c => c.classList.remove('selected'));
           _towerSelected.add(tower);
@@ -1366,7 +1335,7 @@ function confirmTowerPicker() {
   const agentName = _towerPickerAgent;
   closeTowerPicker();
 
-  // Sort selected towers into serpentine order
+  // 선택한 타워를 지그재그 순서로 정렬한다.
   const selected = Array.from(_towerSelected);
   const ordered = SERPENTINE_ORDER.filter(t => selected.includes(t));
 
@@ -1382,6 +1351,6 @@ function confirmTowerPicker() {
   _launchAgent(agentName, params);
 }
 
-/* ── Init ──────────────────────────────────────────────────── */
+/* 초기화. */
 _updateSoundBtn();
 connectWS();

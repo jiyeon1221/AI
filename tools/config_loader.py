@@ -67,15 +67,6 @@ def get_mapping_root_path() -> str:
     return str(mapping_path)
 
 
-def get_mapping_csv_path() -> str:
-    """매핑 CSV 파일 경로 반환 (Mapping 경로에서 .root를 .csv로 변환)"""
-    root_path = get_mapping_root_path()
-    mapping_path = Path(root_path)
-    mapping_csv_path = mapping_path.parent / (mapping_path.stem + ".csv")
-    return str(mapping_csv_path)
-
-
-
 def get_path_config(key: str) -> str:
     """설정 파일의 Paths 섹션에서 경로를 가져옴"""
     config = load_config()
@@ -84,11 +75,11 @@ def get_path_config(key: str) -> str:
     if not val:
         raise ValueError(f"설정 파일의 Paths 섹션에 '{key}'가 정의되지 않았습니다.")
     
-    # SpreadsheetId는 경로가 아니므로 변환 제외
+    # 스프레드시트 ID는 경로 변환에서 제외한다.
     if key == "SpreadsheetId":
         return str(val)
         
-    # 상대 경로인 경우 프로젝트 루트와 결합하여 절대 경로로 변환
+    # 상대 경로를 프로젝트 기준 절대 경로로 바꾼다.
     if not os.path.isabs(str(val)):
         return str((PROJECT_ROOT / str(val)).resolve())
         
@@ -101,9 +92,57 @@ def get_hv_config() -> Dict[str, Any]:
     return config.get("HV", {})
 
 
+def get_run_log_fixed_hv_path() -> Path:
+    """런 로그의 DRC HV 비교 기준 파일 경로 반환 (RunLog.FixedHvFile).
+
+    실험 시기에 따라 기준을 fixed_hv_v1/v2 등으로 바꿔 끼울 수 있도록 config에서 지정한다.
+    HV Equalization이 기록하는 대상(항상 fixed_hv.txt)과는 별개 — 비교 전용이다.
+    미지정이면 fixed_hv.txt. 상대 경로는 프로젝트 루트 기준으로 해석한다."""
+    config = load_config()
+    val = str((config.get("RunLog") or {}).get("FixedHvFile") or "fixed_hv.txt")
+    path = Path(val)
+    return path if path.is_absolute() else (PROJECT_ROOT / path).resolve()
+
+
 def get_run_log_beam_type() -> str:
     """새 Run 로그 작성 시 사용할 기본 Beam Type 반환 (RunLog.BeamType)"""
     config = load_config()
     return str(config.get("RunLog", {}).get("BeamType", "e-"))
 
+
+def get_dqm_dir() -> Path:
+    """DQM 소스 디렉터리 (Paths.DqmDir). monit 바이너리·jsroot·config가 여기 있다."""
+    return Path(get_path_config("DqmDir"))
+
+
+def get_dqm_output_dir() -> Path:
+    """monit이 ROOT/JSON canvas를 떨어뜨리는 디렉터리."""
+    out = get_dqm_dir() / "output"
+    out.mkdir(parents=True, exist_ok=True)
+    return out
+
+
+def get_studio_ssh() -> Dict[str, str]:
+    """Mac Studio SSH 접속 정보 — 키 이름 표기 흔들림(User/Username)을 흡수한다."""
+    cfg = load_config().get("StudioSSH", {}) or {}
+    return {
+        "host": str(cfg.get("Host", "")),
+        "user": str(cfg.get("User") or cfg.get("Username") or ""),
+        "password": str(cfg.get("Password", "")),
+    }
+
+
+def get_last_finished_run_number() -> Optional[int]:
+    """방금 종료된 run number.
+
+    DAQ가 종료되면 runnum.txt는 '다음' 번호로 갱신되므로 -1 한다.
+    DAQ 실행 중에 얻은 번호를 쓸 수 있다면 daq_tool이 출력에 심는 마커
+    (parse_run_number_from_daq_output)를 쓰는 쪽이 정확하다 — 이 함수는
+    그 경로가 없을 때의 fallback이다.
+    """
+    try:
+        with open(get_path_config("RunNumberFile"), "r") as f:
+            return int(f.read().strip()) - 1
+    except Exception:
+        return None
 

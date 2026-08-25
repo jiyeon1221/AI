@@ -50,9 +50,9 @@ TBmonit<T>::TBmonit(ObjectCollection* fObj_)
 : fObj(fObj_)
 {
   // Config file path: prefer --Config <path> from the CLI; fall back to
-  // the legacy hard-coded autoTB location for callers that don't pass it
+  // the hard-coded project location for callers that don't pass it
   // (so old workflows keep working).
-  std::string config_path = "/Users/yhep/autoTB/config_general.yml";
+  std::string config_path = "/Users/yhep/AI/base/config_general.yml";
   std::string config_arg;
   fObj->GetVariable("Config", &config_arg);
   if (!config_arg.empty() && config_arg != "null")
@@ -66,7 +66,6 @@ TBmonit<T>::TBmonit(ObjectCollection* fObj_)
 
   fUtility = TButility(fMapping);
 
-  // fCaseName = fNodePlot["Name"].as<std::string>()
 
   fObj->GetVariable("RunNumber", &fRunNum);
   fObj->GetVariable("MaxEvent", &fMaxEvent);
@@ -75,15 +74,11 @@ TBmonit<T>::TBmonit(ObjectCollection* fObj_)
   fObj->GetVariable("LIVE", &fIsLive);
   fObj->GetVariable("AUX", &fAuxPlotting);
   fObj->GetVariable("AUXcut", &fAuxCut);
-  // GetVariable<string>() returns "null" when the CLI flag is missing,
-  // so we have to explicitly fall back to "WC" to preserve the legacy
-  // --AUXcut behavior when --AUXCutMode is not provided.
+  // AUX cut 기본 범위는 WC이다.
   std::string auxCutModeArg;
   fObj->GetVariable("AUXCutMode", &auxCutModeArg);
   fAuxCutMode = (auxCutModeArg == "null" || auxCutModeArg.empty()) ? "WC" : auxCutModeArg;
-  // AUX scope: same convention — fall back to legacy "WCHodo" when
-  // --AUXMode is not provided. TBaux validates the value (anything
-  // other than WC/Hodo/WCHodo is normalised back to WCHodo there).
+  // AUX 플롯 기본 대상은 WC와 Hodo이다.
   std::string auxModeArg;
   fObj->GetVariable("AUXMode", &auxModeArg);
   fAuxMode = (auxModeArg == "null" || auxModeArg.empty()) ? "WCHodo" : auxModeArg;
@@ -177,7 +172,6 @@ void TBmonit<T>::LoopLive() {
 
   std::vector<std::string> aModules = {};
   fObj->GetVector("module", &aModules);
-  // std::cout << "std::vector<std::string> aModules " << aModules.size() << " " << aModules.at(0) << std::endl;
 
   if (aModules.size() == 1 && (aCase == "heatmap" || aCase == "module")) {
     fPlotter.SetModule(aModules.at(0));
@@ -185,9 +179,6 @@ void TBmonit<T>::LoopLive() {
 
   } else if (aCase == "single") {
 
-    // std::vector<TBcid> aCID;
-    // for (int i = 0; i < aModules.size(); i++)
-    //   aCID.push_back(fUtility.GetCID(aModules.at(i)));
 
     // T1, T2 등만 입력된 경우 T1-S, T1-C로 확장
     auto isTowerName = [](const std::string& module) {
@@ -231,7 +222,6 @@ void TBmonit<T>::LoopLive() {
   if (fAuxPlotting)
     fAux.SetApp(fApp);
 
-  // for (int idx = 0; idx < 10; idx++) {
 
   std::vector<int> tUniqueMID = {};
   if (fAuxPlotting || fAuxCut)
@@ -255,7 +245,7 @@ void TBmonit<T>::LoopLive() {
     );
 
     while(1) {
-      if (!readerWave.CheckNextFileExistence()) break;
+      readerWave.CheckNextFileExistence();
 
       int iLiveCurrentEvent = readerWave.GetLiveCurrentEvent();
       int iCurrentEvent = readerWave.GetCurrentEvent();
@@ -341,13 +331,9 @@ void TBmonit<T>::LoopAfterRun() {
   std::vector<std::string> aModules = {};
   fObj->GetVector("module", &aModules);
 
-  // std::cout << "std::vector<std::string> aModules " << aModules.size() << " " << aModules.at(0) << std::endl;
   if (aModules.size() == 1 && (aCase == "heatmap" || aCase == "module")) {
     fPlotter.SetModule(aModules.at(0));
   } else if (aCase == "single") {
-    // std::vector<TBcid> aCID;
-    // for (int i = 0; i < aModules.size(); i++)
-    //   aCID.push_back(fUtility.GetCID(aModules.at(i)));
 
     // T1, T2 등만 입력된 경우 T1-S, T1-C로 확장
     auto isTowerName = [](const std::string& module) {

@@ -58,8 +58,6 @@ int main(int argc, char *argv[]) {
 	float cut_DWC = 1.5;
 
 	// Integral range
-	// int start_bin = 650;
-	// int end_bin = 800;
 	// height for text legend
 	TLatex* text = new TLatex();
 	text->SetTextSize(0.025);  
@@ -69,11 +67,6 @@ int main(int argc, char *argv[]) {
 	TButility util = TButility();
 	util.LoadMapping("../mapping/mapping_KEK.root");
 	
-	// TFile *f_DWC = TFile::Open((TString)("./DWC/DWC_Run_" + std::to_string(fRunNum) + ".root"), "READ");
-	// TH2D *h_DWC1_pos = (TH2D *)f_DWC->Get("dwc1_pos");
-	// TH2D *h_DWC2_pos = (TH2D *)f_DWC->Get("dwc2_pos");
-	// std::vector<float> DWC1_offset = getDWCoffset(h_DWC1_pos); // DWC1_offset.at(0) == X, DWC1_offset.at(1) == Y
-	// std::vector<float> DWC2_offset = getDWCoffset(h_DWC2_pos);
 
 
 	std::vector<TBcid> cids;
@@ -83,9 +76,8 @@ int main(int argc, char *argv[]) {
 		cids.push_back(util.GetCID(channel_names.at(idx)));
 	}
 
-    // MID: 3-7: PMT modules, MID 9: LC, MID 10: Aux(CC1, CC2, PS, TC, MC), MID 12: Triggers (T1, T2, T1NIM, T2NIM, Coin), MID 14-17: MCP micro, MID 18: DWC
+  // MID 장비: 3–7 PMT, 9 LC, 10 Aux, 12 Trigger, 14–17 MCP, 18 DWC.
     TBread<TBwaveform> readerWave = TBread<TBwaveform>(fRunNum, fMaxEvent, fMaxFile, false, "/pnfs/knu.ac.kr/data/cms/store/user/sungwon/2025_KEK_TB_Data", {8, 9, 13});
-    // TBread<TBwaveform> readerWave = TBread<TBwaveform>(fRunNum, fMaxEvent, fMaxFile, false, "/Volumes/Macintosh HD-1/Volumes/HDD_16TB_3", {3, 4, 5, 6, 7, 9, 10, 12, 14, 15, 16, 17, 18});
 
 	// Set Maximum event
     if (fMaxEvent == -1 || fMaxEvent > readerWave.GetMaxEvent())

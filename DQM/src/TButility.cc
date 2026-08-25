@@ -26,8 +26,6 @@ void TButility::LoadMapping(const std::string &path)
   for (int i = 0; i < mapChain_DAQ->GetEntries(); i++) {
     mapChain_DAQ->GetEntry(i);
 
-    // if (*name == "null")
-    //   continue;
 
     TBcid aCID = TBcid(mid, ch);
     mapping_CID_NAME.insert(std::make_pair(aCID, *name));
@@ -45,8 +43,6 @@ void TButility::LoadMapping(const std::string &path)
   for (int i = 0; i < mapChain_DQM->GetEntries(); i++) {
     mapChain_DQM->GetEntry(i);
 
-    // if (*name == "null")
-    //   continue;
 
     mapping_NAME_INFO.insert(std::make_pair(*name, mod_info(isCeren, row, column)));
     mapping_CID_INFO.insert(std::make_pair(GetCID(*name), mod_info(isCeren, row, column)));

@@ -1,20 +1,23 @@
 #!/usr/bin/env python3
 """Run Log Tool — Google Spreadsheet에 실험 로그 기록"""
 
-import os
 import gspread
 from google.oauth2.service_account import Credentials
 from datetime import datetime
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 from pathlib import Path
 
 from .base_tool import BaseTool
-from .config_loader import get_path_config, get_run_log_beam_type
+from .config_loader import (
+    get_last_finished_run_number,
+    get_path_config,
+    get_run_log_beam_type,
+    get_run_log_fixed_hv_path,
+)
 from .hv_control_tool import HVControlTool
 from .hodoscope_hv_tool import read_hv_from_log
 
-# ===== 경로 및 설정 (Config from YAML) =====
-RUNNUM_FILE = get_path_config("RunNumberFile")
+# YAML 기반 실행 로그 설정.
 JSON_KEY_FILE = get_path_config("JsonKeyFile")
 SPREADSHEET_ID = get_path_config("SpreadsheetId")
 
@@ -41,9 +44,9 @@ class RunLogTool(BaseTool):
             ]
             creds = Credentials.from_service_account_file(str(JSON_KEY_FILE), scopes=scopes)
             self.client = gspread.authorize(creds)
-            # URL 대신 ID로 오픈
+            # 스프레드시트 ID로 문서를 연다.
             spreadsheet = self.client.open_by_key(SPREADSHEET_ID)
-            # 항상 제일 앞(맨 왼쪽) 탭에 기록
+            # 첫 번째 워크시트에 기록한다.
             self.sheet = spreadsheet.get_worksheet(0)
             return True
         except Exception as e:
@@ -71,12 +74,9 @@ class RunLogTool(BaseTool):
         else:
             raise RuntimeError(f"지원하지 않는 명령입니다: {command}")
 
-    # Path to the fixed HV reference file — READ ONLY, never write to this file
-    _FIXED_HV_PATH = Path(__file__).parent.parent / "fixed_hv.txt"
-
     @staticmethod
     def _parse_fixed_hv(path: Path) -> Dict[str, str]:
-        """fixed_hv.txt 파싱 → {CHANNEL: vset} dict"""
+        """기준 HV 파일 파싱 → {CHANNEL: vset} dict"""
         result = {}
         with open(path, "r") as f:
             for line in f:
@@ -89,12 +89,16 @@ class RunLogTool(BaseTool):
         return result
 
     def _build_hv_drc_string(self, name_to_vset: Dict[str, str]) -> str:
-        """fixed_hv.txt 유무에 따라 DRC HV 문자열 생성"""
-        # 그룹: 타워 T1-T9는 (S, C) 쌍, MCP는 (MCP-S, MCP-C) 쌍
+        """비교 기준 HV 파일(RunLog.FixedHvFile) 유무에 따라 DRC HV 문자열 생성.
+
+        비교 기준은 실험 시기마다 달라질 수 있어 config에서 지정한다 — 여기서는 읽기만
+        하고, fixed_hv.txt 갱신은 hv_equalization_tool.write_fixed_hv가 담당한다."""
+        # 타워와 MCP의 S/C 채널을 쌍으로 묶는다.
         groups = [(f"T{i}S", f"T{i}C") for i in range(1, 10)] + [("MCP-S", "MCP-C")]
 
-        if self._FIXED_HV_PATH.exists():
-            fixed = self._parse_fixed_hv(self._FIXED_HV_PATH)
+        fixed_hv_path = get_run_log_fixed_hv_path()
+        if fixed_hv_path.exists():
+            fixed = self._parse_fixed_hv(fixed_hv_path)
             diff_lines = []
             for pair in groups:
                 parts = []
@@ -123,7 +127,7 @@ class RunLogTool(BaseTool):
         """
         HV config에서 채널별 V0Set snapshot 수집.
         - Aux: Trig1, Trig2
-        - DRC: fixed_hv.txt 존재 시 비교, 없으면 전체 출력
+        - DRC: 비교 기준 HV 파일(RunLog.FixedHvFile) 존재 시 비교, 없으면 전체 출력
         """
         hv = HVControlTool()
         try:
@@ -159,14 +163,8 @@ class RunLogTool(BaseTool):
         """새로운 로그 행 추가 (DAQ 호출용)"""
         run_num = params.get("run_num")
         if not run_num:
-            try:
-                with open(RUNNUM_FILE, "r") as f:
-                    # Run이 종료된 후 runnum.txt가 다음 번호로 업데이트되므로, 
-                    # 방금 종료된 Run 정보를 위해 -1을 수행함
-                    val = f.read().strip()
-                    run_num = str(int(val) - 1)
-            except Exception:
-                run_num = "Unknown"
+            last = get_last_finished_run_number()
+            run_num = str(last) if last is not None else "Unknown"
 
         program = params.get("program", "")
         evts = params.get("evts", "")
@@ -189,7 +187,7 @@ class RunLogTool(BaseTool):
         pos_tilt = safe_round(params.get("pos_tilt", ""))
         beam_energy = params.get("beam_energy", "")
 
-        # Beam Type: 요청에 beam_type이 있으면 우선, 없으면 config_general.yml의 RunLog.BeamType 사용
+        # 요청값이 없으면 설정의 빔 유형을 사용한다.
         beam_type = params.get("beam_type") or get_run_log_beam_type()
 
         hv_drc = params.get("hv_drc", "")
@@ -199,7 +197,7 @@ class RunLogTool(BaseTool):
             hv_drc = hv_snapshot.get("hv_drc", "")
             hv_aux = hv_snapshot.get("hv_aux", "")
 
-        # Append hodoscope HV from the run log (actual per-channel values)
+        # 실행 로그의 호도스코프 채널별 HV를 추가한다.
         hodo_hvs = read_hv_from_log(str(run_num))
         if hodo_hvs:
             hodo_str = "\n".join(
@@ -207,7 +205,7 @@ class RunLogTool(BaseTool):
             )
             hv_aux = f"{hv_aux}\n{hodo_str}" if hv_aux else hodo_str
 
-        # Duration (seconds) and Rate (evts/s)
+        # 실행 시간과 초당 이벤트 수를 계산한다.
         duration_secs = ""
         rate = ""
         if start_time and end_time:
@@ -221,7 +219,7 @@ class RunLogTool(BaseTool):
             except (ValueError, TypeError):
                 pass
 
-        # AI가 채우는 열만 기록 (N: Trigger Setup 은 사람이 직접 채우므로 건드리지 않음)
+        # 자동화 대상 열만 기록한다. Trigger Setup은 수동 입력 열이다.
         # B(2): Program | C(3): Run # | D(4): evts | E(5): start | F(6): end | G(7): Duration
         # H(8): HV DRC | I(9): HV Aux | J(10): Pos H | K(11): Pos V | L(12): Pos Rot | M(13): Pos Tilt
         # O(15): Beam Type | P(16): Beam Energy | Q(17): Rate | R(18): Config | S(19): Notes
@@ -246,11 +244,11 @@ class RunLogTool(BaseTool):
         }
 
         try:
-            # 마지막 데이터 행 찾기 (Run #가 있는 C열 기준)
+            # 실행 번호가 있는 마지막 데이터 행을 찾는다.
             col_c_values = self.sheet.col_values(3)
             next_row = len(col_c_values) + 1
 
-            # 헤더가 5행까지 있으므로, 데이터는 최소 6행부터 시작해야 함
+            # 데이터는 헤더 다음인 6행부터 시작한다.
             if next_row < 6:
                 next_row = 6
 
@@ -266,7 +264,7 @@ class RunLogTool(BaseTool):
         except Exception as e:
             raise RuntimeError(f"로그 추가 실패: {str(e)}") from e
 
-    # Header row index (1-based) and column mapping for read
+    # 읽기용 1부터 시작하는 열 번호와 이름.
     _HEADER_ROW = 5
     _READ_COLUMNS = {
         2: "Program", 3: "Run #", 4: "Events", 5: "Start", 6: "End",
@@ -301,7 +299,7 @@ class RunLogTool(BaseTool):
         except Exception as e:
             raise RuntimeError(f"로그 조회 실패: {str(e)}") from e
 
-    # Column name → (sheet column index, display label)
+    # 열 이름별 시트 열 번호와 표시명.
     UPDATABLE_COLUMNS = {
         "program":       (2,  "Program"),
         "evts":          (4,  "Events"),

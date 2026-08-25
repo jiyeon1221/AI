@@ -4,31 +4,25 @@
 import os
 import re
 import time
-import shlex
 import shutil
 import subprocess
 from datetime import datetime
 from typing import Dict, Any, Optional
-from pathlib import Path
 
 from .base_tool import BaseTool
 from .run_log_tool import RunLogTool
-from .config_loader import get_path_config, get_data_directory, load_config
+from .config_loader import get_path_config, get_data_directory
+from .ssh_utils import run_studio_ssh, studio_ssh_shell_command
 
 
-# ===== DAQ 설정 (Config from YAML) =====
+# YAML 기반 DAQ 설정.
 WORKDIR = get_path_config("DaqWorkDir")
 RUN_SCRIPT = get_path_config("DaqScript")
 RUNNUM_FILE = get_path_config("RunNumberFile")
 KILLME_FILE = get_path_config("KillMeFile")
 NOTICE_BASE = get_path_config("NoticeBase")
 
-_studio = load_config()["StudioSSH"]
-STUDIO_HOST = _studio["Host"]
-STUDIO_USER = _studio["User"]
-STUDIO_PASSWORD = _studio["Password"]
-
-# DAQ 시작 시 읽은 run number — agents는 종료 후 runnum.txt 재읽기(-1) 대신 이 값 사용
+# DAQ 시작 시 확정한 실행 번호.
 DAQ_RUN_NUMBER_MARKER = "__AUTO_TB_RUN_NUMBER__="
 
 
@@ -86,9 +80,7 @@ class DAQRunTool(BaseTool):
         except FileNotFoundError:
             raise RuntimeError("runnum.txt 파일을 찾을 수 없습니다. DAQ start를 먼저 실행하세요.")
 
-        # ── DQM live session: spawn monit --LIVE alongside DAQ ────────────────
-        # Best-effort: if anything fails (no manifest, missing binary, etc.)
-        # we still run DAQ — DQM is auxiliary.
+        # DAQ와 함께 선택적 DQM 실시간 세션을 시작한다.
         dqm_started = False
         try:
             from tools.dqm_live_worker import dqm_session
@@ -96,9 +88,7 @@ class DAQRunTool(BaseTool):
             agent_type = shared_state.get("agent_type")
             output_queue = shared_state.get("_output_queue")
             if agent_type and output_queue is not None:
-                # Manifest cell templates use ${current_tower} as the bare digit
-                # (e.g. fCanvas_Tower5). shared_state stores the prefixed form
-                # ("T5"), so strip the leading "T".
+                # 캔버스 템플릿에는 타워 번호만 전달한다.
                 tower_raw = shared_state.get("current_tower") or "5"
                 if isinstance(tower_raw, str) and tower_raw.upper().startswith("T"):
                     tower_num = tower_raw[1:]
@@ -117,12 +107,8 @@ class DAQRunTool(BaseTool):
         except Exception as _dqm_err:
             print(f"⚠️ DQM live start skipped: {_dqm_err}", flush=True)
 
-        cmd = (
-            f"sshpass -p {shlex.quote(STUDIO_PASSWORD)} ssh"
-            f" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
-            f" -o PreferredAuthentications=password -o PubkeyAuthentication=no"
-            f" {STUDIO_USER}@{STUDIO_HOST}"
-            f" 'cd {WORKDIR} && bash {RUN_SCRIPT} {config} {events}'"
+        cmd = studio_ssh_shell_command(
+            f"cd {WORKDIR} && bash {RUN_SCRIPT} {config} {events}"
         )
 
         try:
@@ -142,7 +128,7 @@ class DAQRunTool(BaseTool):
 
             start_time = datetime.now()
 
-            # Write initial log row immediately so the run is recorded even if killed.
+            # 시작 직후 실행 로그의 기본 행을 기록한다.
             _log_tool = RunLogTool()
             try:
                 _log_tool.execute({
@@ -188,26 +174,14 @@ class DAQRunTool(BaseTool):
                 if process.poll() is not None:
                     break
 
-                # KILLME 파일 모니터링
+                # KILLME 종료 신호를 확인한다.
                 if os.path.exists(KILLME_FILE):
                     print("🛑 KILLME file detected - Stopping execution...", flush=True)
                     output_lines.append("🛑 KILLME file detected - Stopping execution...")
                     process.terminate()
                     process.wait()
                     try:
-                        subprocess.run(
-                            [
-                                "sshpass", "-p", STUDIO_PASSWORD,
-                                "ssh",
-                                "-o", "StrictHostKeyChecking=no",
-                                "-o", "UserKnownHostsFile=/dev/null",
-                                "-o", "PreferredAuthentications=password",
-                                "-o", "PubkeyAuthentication=no",
-                                f"{STUDIO_USER}@{STUDIO_HOST}",
-                                f"rm -f {WORKDIR}/KILLME",
-                            ],
-                            timeout=10, check=False,
-                        )
+                        run_studio_ssh(f"rm -f {WORKDIR}/KILLME", timeout=10)
                     except Exception:
                         pass
                     try:
@@ -245,7 +219,7 @@ class DAQRunTool(BaseTool):
             percent_used = used / total * 100
 
             if exit_code == 0:
-                # BaseDirectory(config_general.yml)를 단일 진실 소스로 사용 — DQM/HV/dat_plot과 동일.
+                # 설정의 BaseDirectory를 데이터 경로로 사용한다.
                 try:
                     from pathlib import Path as _Path
                     data_base = get_data_directory()
@@ -294,8 +268,7 @@ class DAQRunTool(BaseTool):
         except Exception as e:
             raise RuntimeError(f"DAQ 실행 중 오류: {str(e)}") from e
         finally:
-            # Always stop DQM live session (touches sentinel, waits for monit
-            # to flush a final chunk and exit).
+            # DQM 세션을 종료하고 마지막 출력을 기다린다.
             if dqm_started:
                 try:
                     from tools.dqm_live_worker import dqm_session

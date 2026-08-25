@@ -8,11 +8,10 @@ from pathlib import Path
 from datetime import datetime
 
 from tools.daq_tool import DAQRunTool
-import tools.motor_control_tool as motor
 
 from .base_agent import BaseAgent, format_event_count, extract_number_tokens
 sys.path.append(str(Path(__file__).parent.parent))
-from config import AGENT_MODELS, MSG_PLOT_CONFIRM
+from config import AGENT_MODELS
 
 
 class CalibScanAgent(BaseAgent):
@@ -46,10 +45,10 @@ class CalibScanAgent(BaseAgent):
 
         self.daq_tool = DAQRunTool()
 
-        # 타워 순서는 agent_runner에서 전달 — fallback으로 기본 지그재그 사용
+        # 타워 순서가 없으면 기본 지그재그 순서를 사용한다.
         self.tower_order = tower_order if tower_order is not None else ["T1", "T2", "T3", "T6", "T5", "T4", "T7", "T8", "T9"]
         
-        # Calibration은 rot=0, tilt=0 고정
+        # 보정 스캔의 회전과 기울기는 0으로 고정한다.
         self.tower_positions = {}
         from tools.position_calculator_tool import get_calculator
         calc = get_calculator()
@@ -68,6 +67,8 @@ class CalibScanAgent(BaseAgent):
             
             "tower_order": self.tower_order,
             "current_tower_idx": 0,
+            # DQM 실시간 캔버스가 참조하는 현재 타워.
+            "current_tower": self.tower_order[0],
             
             "tower_status": {
                 tower: {
@@ -155,9 +156,7 @@ When ALL towers are completed, the SYSTEM sends the completion message and ends 
         """현재 상태 요약 - AI가 학습을 통해 다음 단계를 스스로 결정"""
         phase = self.state.get("phase", "config")
 
-        # STEP 0: beam_energy/target_events가 설정 안 됐으면 사용자에게 먼저 물어야 한다.
-        # phase 무시하고 STEP 1로 가버리는 것을 막기 위해 명시적으로 안내.
-        # 마지막 대화가 user 응답인지 확인 — 이미 답한 경우엔 parse 지시
+        # 0단계에서는 빔 에너지와 이벤트 수를 입력받는다.
         _last_user = None
         for _msg in reversed(self.conversation_history):
             if _msg["role"] == "user":
@@ -181,7 +180,7 @@ When ALL towers are completed, the SYSTEM sends the completion message and ends 
             return (f"Phase: config_events | beam_energy={self.state['beam_energy']} | "
                     "REQUIRED NEXT: ask user for event count (STEP 0). Do NOT call motor tool yet.")
 
-        # STEP 1+: config 끝난 경우만 진입
+        # 설정이 끝나면 타워 스캔을 시작한다.
         tower_idx = self.state.get("current_tower_idx", 0)
         total = len(self.tower_order)
         if tower_idx < total:
@@ -190,7 +189,7 @@ When ALL towers are completed, the SYSTEM sends the completion message and ends 
             if not status.get("x_moved"):
                 return f"Phase: {phase} | Tower: {tower} ({tower_idx+1}/{total}) | REQUIRED NEXT: motor_x_move_tool (step 1a-i)"
             elif not status.get("y_confirmed"):
-                # Y축 확인은 사용자 '완료' 시 코드가 처리. 모델은 Y 이동 메시지만 출력.
+            # Y축 이동 완료 여부는 사용자 응답으로 처리한다.
                 return f"Phase: {phase} | Tower: {tower} ({tower_idx+1}/{total}) | REQUIRED NEXT: Y-axis move message (step 1a-ii)"
             elif not status.get("runs"):
                 return f"Phase: {phase} | Tower: {tower} ({tower_idx+1}/{total}) | REQUIRED NEXT: daq_run_tool (step 1b)"
@@ -199,20 +198,17 @@ When ALL towers are completed, the SYSTEM sends the completion message and ends 
                 return (f"Phase: {phase} | Tower: {tower} ({tower_idx+1}/{total}) | "
                         f"DAQ done (Run {last_run}) — REQUIRED NEXT: plot confirmation message (step 1c). "
                         f"DO NOT call daq_run_tool or motor_x_move_tool. 완료 시 시스템이 자동으로 완료 처리한다.")
-            # runs exist + needs_plot_confirm=False → should already be completed; guard prevents loops
+            # 실행 기록이 있으면 플롯 확인 단계까지 완료된 상태이다.
             return (f"Phase: {phase} | Tower: {tower} ({tower_idx+1}/{total}) | "
                     f"needs_plot_confirm=False — DO NOT call any tool or send plot confirmation.")
         return f"Phase: {phase} | All towers completed — system will terminate automatically"
 
-    # Fields that can never be overwritten by the LLM under any circumstances.
-    # (init-only config + code-owned bookkeeping)
+    # 코드에서만 관리하는 상태 필드.
     _ALWAYS_PROTECTED = frozenset({
         "tower_order", "start_time", "plot_method", "daq_config",
-        "needs_plot_confirm", "last_run_number",
+        "needs_plot_confirm", "last_run_number", "current_tower",
     })
-    # Fields that become read-only once set (not None/0).
-    # During STEP 0 config phase they're None → LLM is allowed to initialise them.
-    # After STEP 0 they hold real values → any further LLM change is rejected.
+    # 초기 설정 후 변경할 수 없는 필드.
     _ONCE_SET_PROTECTED = frozenset({"beam_energy", "target_events"})
 
     def _recompute_tower_idx(self):
@@ -221,17 +217,16 @@ When ALL towers are completed, the SYSTEM sends the completion message and ends 
             1 for s in self.state["tower_status"].values() if s.get("completed")
         )
         self.state["current_tower_idx"] = completed_count
+        # 완료 후에도 DQM이 마지막 타워 캔버스를 가리키게 한다.
+        self.state["current_tower"] = self.tower_order[
+            min(completed_count, len(self.tower_order) - 1)
+        ]
 
     def _guard_update_state(self, updates: Dict[str, Any]) -> Optional[str]:
-        """STEP 0 config 파싱 방어 (2단계):
-        1) 입력에서 값을 하나로 확정할 수 있으면 → LLM 파싱을 코드 값으로 자동 교정
-           - beam_energy: GeV 앵커 숫자 (없으면 입력의 유일한 숫자)
-           - target_events: GeV 앵커가 아닌 유일한 숫자
-           '3GeV 10000개'를 한 턴에 답해 beam_energy=10000으로 뒤바뀌는 것도 여기서 교정.
-        2) 확정 불가(후보 여러 개)면 → 출처 검증(입력에 없는 숫자 거부)으로 폴백"""
+        """초기 에너지와 이벤트 수를 사용자 입력에서 검증한다."""
         tokens = extract_number_tokens(self._last_user_input)
         if not tokens:
-            return None  # 대조할 입력이 없으면 통과 (기존 동작 유지)
+            return None  # 비교할 입력이 없으면 검증을 생략한다.
         energies = [v for v, _, _, is_e in tokens if is_e]
         plains = [v for v, _, _, is_e in tokens if not is_e]
 
@@ -239,17 +234,17 @@ When ALL towers are completed, the SYSTEM sends the completion message and ends 
             ("beam_energy", energies if energies else plains, lambda x: int(x) if x == int(x) else x),
             ("target_events", plains, int),
         ):
-            # 최초 설정(config 단계)만 방어 — 이후엔 _ONCE_SET_PROTECTED가 변경 자체를 막는다
+            # 초기 설정값의 숫자 출처를 검증한다.
             if key not in updates or updates[key] is None or self.state.get(key) is not None:
                 continue
-            # ── 1) 자동 교정: 후보가 정확히 1개면 코드 값으로 확정 ──
+            # 후보가 하나면 해당 값으로 확정한다.
             if len(candidates) == 1:
                 true_val = cast(candidates[0])
                 if updates[key] != true_val:
                     self.log(f"{key} 자동 교정(입력 기준): LLM {updates[key]!r} → {true_val!r}")
                     updates[key] = true_val
                 continue
-            # ── 2) 폴백: 출처 검증 ──
+            # 자동 확정이 불가능하면 입력 원문과 대조한다.
             try:
                 v = float(updates[key])
             except (TypeError, ValueError):
@@ -267,8 +262,7 @@ When ALL towers are completed, the SYSTEM sends the completion message and ends 
             if key == "tower_status" and isinstance(value, dict):
                 for t, v in value.items():
                     if t in self.state["tower_status"]:
-                        # completed/runs/collected_events/x_moved/y_confirmed는 코드 소유.
-                        # 완료 표시는 _on_user_input(plot 확인)에서만 일어난다.
+                        # 진행 상태와 실행 기록은 코드에서 관리한다.
                         safe_v = {
                             k: val for k, val in v.items()
                             if k not in ("completed", "completed_at", "runs",
@@ -280,18 +274,18 @@ When ALL towers are completed, the SYSTEM sends the completion message and ends 
                         self.log(f"State updated: tower_status[{t}] = {safe_v}")
                 self._recompute_tower_idx()
             elif key == "current_tower_idx":
-                # tower_status 기반 자동 관리 — LLM 직접 설정 무시
+                # 타워 진행 상태에서 전체 완료 여부를 계산한다.
                 self.log(f"current_tower_idx 직접 설정 무시 (tower_status 기반 자동 관리)")
             elif key in self._ALWAYS_PROTECTED:
                 self.log(f"WARNING: LLM tried to update protected field '{key}' = {value} — rejected")
             elif key in self._ONCE_SET_PROTECTED and self.state.get(key) is not None:
-                # Already initialised → reject mid-scan changes
+                # 스캔 중 초기 설정 변경을 막는다.
                 self.log(f"WARNING: LLM tried to overwrite already-set '{key}' = {value} — rejected")
             else:
                 self.state[key] = value
                 self.log(f"State updated: {key} = {value}")
 
-        # config 완료(target_events 최초 설정) 시 설정 내용을 코드가 echo (사용자 이중 확인용)
+        # 설정 완료 시 확정된 값을 사용자에게 알린다.
         if _events_before is None and self.state.get("target_events") is not None:
             self.io.send_ai_message(
                 f"설정을 다음과 같이 확인했습니다:\n"
@@ -314,73 +308,50 @@ When ALL towers are completed, the SYSTEM sends the completion message and ends 
 
         elif tool_name == "motor_x_move_tool":
             tower = self._current_tower_name()
-            x = self._motor_x_for_current_step()
-            self.io.send_tool_output(f"[Motor] X축 이동 시작 ({tower}): {x:.3f} mm")
-            def _do_move():
-                ok, msg = motor.move_x(x)
-                if not ok:
-                    raise RuntimeError(msg)
-                return msg
-            result = self._run_tool_with_retry(_do_move, "motor_x_move_tool")
-            self.io.send_tool_output(f"[Motor] {result}")
+            result = self._run_motor_x_move(tower)
             self.state["tower_status"][tower]["x_moved"] = True
             return result
 
         elif tool_name == "daq_run_tool":
             tower = self._current_tower_name()
-            pos = self._position_for_current_step()
-            self._apply_daq_params_from_state(
+            result, run_number = self._run_daq_from_state(
                 params,
                 events=self.state.get("target_events"),
                 beam_energy=self.state.get("beam_energy"),
                 program="Calibration",
-                pos=pos,
+                pos=self._position_for_current_step(),
             )
-
-            # DAQ 실행. daq_tool 내부에서 dqm_session.start()이 monit --LIVE를 띄워
-            # DAQ 동안 우측 하단 DQM 패널이 실시간 갱신된다 — 여기가 유일한 플롯 경로.
-            result = self._run_tool_with_retry(
-                lambda: self.daq_tool.execute(params, line_callback=self.io.send_tool_output),
-                "daq_run_tool",
-            )
-
-            run_number = self._extract_run_number(result)
             if run_number:
-                self.state['last_run_number'] = run_number
                 self.state['tower_status'][tower]['runs'].append(run_number)
                 self.state['tower_status'][tower]['collected_events'] = params.get('events', 0)
                 self.log(f"DAQ Run {run_number} 완료: {tower} 타워, {params.get('events', 0)} events")
-            # 사용자 plot 확인 전까지 completed=True 차단
-            self.state['needs_plot_confirm'] = True
             return result
 
         return f"Error: Unknown tool {tool_name}"
 
     def _guard_tool(self, tool_name: str, decision) -> Optional[str]:
-        # 1. plot confirm 필요 시 모든 tool 차단
-        if self.state.get("needs_plot_confirm"):
-            return (
-                f"needs_plot_confirm=True — DO NOT call {tool_name}. "
-                f'Send: {{"message": "{MSG_PLOT_CONFIRM}"}}'
-            )
+        # 플롯 확인 전에는 다음 도구 실행을 막는다.
+        rejection = self._plot_confirm_pending_rejection(tool_name)
+        if rejection:
+            return rejection
         idx = self.state.get("current_tower_idx", 0)
         if idx >= len(self.tower_order):
             return None
         tower = self.tower_order[idx]
         st = self.state["tower_status"].get(tower, {})
-        # 2. motor 이미 완료된 타워에 재호출 차단
+        # 완료된 타워의 모터를 다시 움직이지 않는다.
         if tool_name == "motor_x_move_tool" and st.get("x_moved"):
             return f"{tower} X-axis already moved. Send Y-axis move message. {self._get_step_hint()}"
-        # 3. Y축 미확인 시 DAQ 차단
+        # Y축 이동 확인 전에는 DAQ를 시작하지 않는다.
         if tool_name == "daq_run_tool" and not st.get("y_confirmed"):
             return f"{tower} Y-axis not confirmed. Send Y-axis move message first. {self._get_step_hint()}"
         return None
 
     def _guard_ai_message(self, message: str) -> Optional[str]:
-        if MSG_PLOT_CONFIRM in message and not self.state.get("needs_plot_confirm"):
-            return f"needs_plot_confirm=False — DO NOT send plot confirmation. {self._get_step_hint()}"
-        # 위치 확인이 끝났고 아직 DAQ 전이면 유일한 유효 동작은 daq_run_tool 호출이다.
-        # base 모델이 위치 이동 메시지를 한 번 더 내보내는 것(중복 질문)을 차단한다.
+        rejection = super()._guard_ai_message(message)
+        if rejection:
+            return rejection
+        # 위치 확인 후에는 DAQ 실행만 허용한다.
         idx = self.state.get("current_tower_idx", 0)
         if idx < len(self.tower_order):
             tower = self.tower_order[idx]
@@ -411,7 +382,7 @@ When ALL towers are completed, the SYSTEM sends the completion message and ends 
         lines.append("─" * 36)
         return "\n".join(lines)
 
-    # ===== 공용 드라이버 hooks (run()은 BaseAgent에서 제공) =====
+    # BaseAgent 실행 루프용 훅.
 
     def _print_banner(self):
         print(f"\n{'='*70}\n⚡ Calibration Scan Agent Started\n{'='*70}")
@@ -434,7 +405,7 @@ When ALL towers are completed, the SYSTEM sends the completion message and ends 
         self._print_summary()
 
     def _is_complete(self) -> bool:
-        # config가 끝나야(=energy/events 설정) 완료 판정. 그 전엔 모두 미완료라 자동 False.
+        # 설정 완료 후 타워 진행률을 계산한다.
         if self.state.get("beam_energy") is None or self.state.get("target_events") is None:
             return False
         return all(s.get("completed", False) for s in self.state["tower_status"].values())
@@ -449,9 +420,7 @@ When ALL towers are completed, the SYSTEM sends the completion message and ends 
         return self._format_progress()
 
     def _on_user_input(self, user_input: str):
-        # STEP 0 config 중에는 코드가 소유한 부킹(x_moved/y_confirmed/plot)이 없다.
-        # 이 가드가 없으면 에너지·이벤트 응답("3","1000")이 첫 타워의
-        # y_confirmed=True로 잘못 소비되어 첫 타워 위치 이동을 건너뛴다.
+        # 초기 설정 입력은 타워 확인 응답으로 처리하지 않는다.
         if self.state.get("beam_energy") is None or self.state.get("target_events") is None:
             return
         idx = self.state.get("current_tower_idx", 0)
@@ -459,12 +428,12 @@ When ALL towers are completed, the SYSTEM sends the completion message and ends 
             return
         tower = self.tower_order[idx]
         st = self.state["tower_status"][tower]
-        # 1) Y축 이동 확인 → 코드가 직접 처리
+        # Y축 이동 확인을 기록한다.
         if st.get("x_moved") and not st.get("y_confirmed"):
             st["y_confirmed"] = True
             self.log(f"{tower} Y-axis confirmed by user")
             return
-        # 2) DAQ 후 plot 확인 → 현재 타워 완료 처리 (코드가 소유)
+        # 플롯 확인 후 현재 타워를 완료 처리한다.
         if self.state.get("needs_plot_confirm"):
             self.state["needs_plot_confirm"] = False
             if st.get("runs"):
@@ -472,43 +441,6 @@ When ALL towers are completed, the SYSTEM sends the completion message and ends 
                 st.setdefault("completed_at", datetime.now().strftime("%H:%M:%S"))
                 self._recompute_tower_idx()
                 self.log(f"{tower} plot 확인 완료 → completed")
-
-    def build_full_context(self, current_input: Optional[str] = None) -> str:
-        """전체 context 생성 (EnergyScanAgent와 통일)"""
-        if current_input is None and self.conversation_history:
-            if self.conversation_history[-1]["role"] == "user":
-                current_input = self.conversation_history[-1]["content"]
-                temp_history = self.conversation_history[:-1]
-            else:
-                temp_history = self.conversation_history
-        else:
-            temp_history = self.conversation_history
-
-        parts = []
-        parts.append("=== Current State ===")
-        parts.append(self._build_state_context())
-        parts.append("")
-        parts.append("=== Recent Conversation ===")
-        history_lines = []
-        if not temp_history:
-            history_lines.append("(No conversation yet)")
-        else:
-            for msg in temp_history[-10:]:
-                role = "User" if msg["role"] == "user" else "Agent"
-                history_lines.append(f"{role}: {msg['content']}")
-        parts.append("\n".join(history_lines))
-        parts.append("")
-        
-        if current_input:
-            parts.append("=== Current User Input ===")
-            parts.append(current_input)
-            parts.append("")
-        
-        parts.append("=== Your Task ===")
-        parts.append(self._get_step_hint())
-        parts.append("")
-        parts.append("Output JSON with tool name and parameters.")
-        return "\n".join(parts)
 
     def _build_state_context(self) -> str:
         """State를 문자열로 변환 (EnergyScanAgent와 통일)"""

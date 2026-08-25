@@ -1,50 +1,5 @@
-// ─────────────────────────────────────────────────────────────────────────────
-//  normalize_hodo.cc
-//
-//  Per-channel IntADC normalization for the 16+16 hodoscope fibers.
-//
-//  What it does
-//  ------------
-//  For every hodoscope channel HX1..HX16 / HY1..HY16:
-//    1. Computes IntADC per event over a user-defined integration window
-//       (kIntFirst, kIntLast) — same convention as draw_hodoscope.cc.
-//    2. Accumulates a per-channel IntADC distribution (1D histogram).
-//    3. Takes the histogram's MEAN as the channel's normalization constant.
-//
-//        norm_const[ch] = mean[ch]      // mean of channel ch's IntADC dist.
-//
-//  Downstream code applies it as:
-//        IntADC_calibrated[ch] = IntADC_raw[ch] / norm_const[ch]
-//  After this, every calibrated channel's IntADC distribution is centered
-//  near 1.0 — i.e., per-channel response is equalized. The absolute ADC
-//  scale is intentionally dropped (each channel is normalized against its
-//  OWN mean, not a global one), so downstream code that needs an absolute
-//  charge should keep using the raw IntADC.
-//
-//  Outputs (under ./Hodoscope/):
-//    hodo_norm_intADC.root   — 32 TH1F distributions, for QA
-//    hodo_norm_intADC.txt    — plain-text table with constants
-//  These filenames are FIXED (not per-run) because the calibration is done
-//  once for the entire beam test period. The run number used for calibration
-//  is recorded inside the file headers for provenance.
-//
-//  Usage
-//  -----
-//    ./normalize_hodo <RunNumber> [MaxEvent]
-//        MaxEvent defaults to 30000 (matches the team's recommended sample).
-//        Pass -1 to use every available event in the run.
-//
-//  Notes
-//  -----
-//  - This is a SEPARATE pass from draw_hodoscope.cc on purpose: it's run once
-//    per calibration run, the resulting *.txt is then read by any downstream
-//    code that wants equalized hodoscope signals.
-//  - The integration range below (kIntFirst, kIntLast) is intentionally
-//    hardcoded — change it per beam condition. The reference team's workflow
-//    is: (a) run jbnu_daq_calib.C to LOCATE the average-waveform peak, (b)
-//    pick an integration window around it, then (c) feed that window into a
-//    normalization pass (this script).
-// ─────────────────────────────────────────────────────────────────────────────
+// HX/HY 32개 섬유의 평균 IntADC를 정규화 상수로 저장한다.
+// 사용법: ./normalize_hodo <RunNumber> [MaxEvent]
 
 #include "TBread.h"
 #include "TButility.h"
@@ -127,8 +82,7 @@ int main(int argc, char* argv[]) {
 
   // ── Per-channel IntADC distributions ──────────────────────────────────────
   // 440 bins from -30000 to 300000 matches the binning used by the existing
-  // TBplotengine 1D distributions, so cross-comparison is easy if you ever
-  // overlay them.
+  // 채널별 IntADC 분포.
   std::vector<TH1F*> hIntADC(kNChannels, nullptr);
   for (int i = 0; i < kNChannels; ++i) {
     const std::string name = "h_" + ChannelName(i) + "_intADC";
@@ -136,16 +90,7 @@ int main(int argc, char* argv[]) {
     hIntADC[i] = new TH1F(name.c_str(), title.c_str(), 440, -30000., 300000.);
   }
 
-  // ── Read events ───────────────────────────────────────────────────────────
-  // MID list {8, 9} mirrors draw_hodoscope.cc; the hodoscope is split across
-  // MID 8 (X-fibers) and MID 9 (Y-fibers) in the KEK setup.
-  // MIDs
-  // 1: PMT C
-  // 2: PMT S + trg
-  // 8, 9, 11: MCP S
-  // 11, 13, 15: MCP C
-  // 16: WC, NIM
-  // 17: Hodo X, Y
+  // MID 17의 Hodoscope X·Y 파형을 읽는다.
   TBread<TBwaveform> reader =
       TBread<TBwaveform>(fRunNum, fMaxEvent, -1, false,
                          "/u/user/swkim/SE_UserHome/2025_KEK_TB_Data", {17});
@@ -157,7 +102,7 @@ int main(int argc, char* argv[]) {
             << ", integration window = [" << kIntFirst << ", " << kIntLast << ")"
             << std::endl;
 
-  // ── Event loop: per channel, GetInt(waveform, kIntFirst, kIntLast) ────────
+  // 이벤트별 채널 IntADC를 누적한다.
   for (int iEvt = 0; iEvt < fMaxEvent; ++iEvt) {
     if (iEvt % 1000 == 0) printProgress(iEvt, fMaxEvent);
 
@@ -172,11 +117,7 @@ int main(int argc, char* argv[]) {
   }
   std::cout << std::endl;
 
-  // ── Compute per-channel mean (= normalization constant) ───────────────────
-  // We use the histogram's GetMean() (so only events that fell inside the
-  // histogram range contribute). For channels that ended up with zero entries
-  // (e.g. mapping missing, or DAQ dropout) we emit norm_const = 1.0 so
-  // downstream code is safe to divide by it.
+  // 채널별 평균과 RMS를 계산한다.
   std::vector<double> mean(kNChannels, 0.0);
   std::vector<double> rms (kNChannels, 0.0);
   std::vector<long>   N   (kNChannels, 0);
@@ -195,13 +136,7 @@ int main(int argc, char* argv[]) {
     return 2;
   }
 
-  // ── Normalization constants ───────────────────────────────────────────────
-  // norm_const[ch] = mean[ch]     (each channel divides by its OWN mean)
-  //   -> downstream: IntADC_calibrated = IntADC_raw / norm_const[ch]
-  //   -> after calibration every channel's IntADC distribution is centered
-  //      around 1.0, so per-channel response is equalized.
-  // Channels with no data are left at 1.0 so a downstream blind divide is a
-  // no-op rather than producing inf/NaN.
+  // 채널 평균을 정규화 상수로 사용하며 데이터가 없으면 1.0을 유지한다.
   std::vector<double> normConst(kNChannels, 1.0);
   for (int i = 0; i < kNChannels; ++i) {
     if (!valid[i] || mean[i] == 0.0) {

@@ -1,13 +1,5 @@
 #!/usr/bin/env python3
-"""
-Training data generator for Energy Scan Agent
-
-autoTB 이전 버전과의 차이:
-  STEP 1 T5 이동 메시지 → motor_x_move_tool + Y축 메시지
-
-build_full_context / _build_state_context / _get_step_hint 포맷이
-EnergyScanAgent(energy_scan_agent.py)와 완전히 동일하도록 유지.
-"""
+"""Energy Scan Agent의 워크플로우 학습 데이터를 생성한다."""
 
 import json
 import random
@@ -15,7 +7,13 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+from agents.base_agent import build_prompt_context
 from config import MSG_PLOT_CONFIRM
+from finetuning.data_gen_common import (
+    make_example as _make_example,
+    random_events,
+    write_dataset,
+)
 
 MESSAGE_ASK_ENERGY  = "에너지 설정을 입력해주세요.\n예) 1GeV 50000개 2GeV 200000개 5GeV 100000개  또는  1GeV 80000 3GeV 500000 5GeV 300000"
 MESSAGE_X_MOVED     = "X축 자동 이동 완료 ({x:.3f} mm). Y축을 {y:.3f}으로 이동해주세요."
@@ -108,12 +106,6 @@ When ALL energies are completed, the SYSTEM sends the completion message and end
 """
 
 
-def random_events():
-    """Return a uniformly distributed 3-6 digit integer."""
-    digits = random.randint(3, 6)
-    return random.randint(10**(digits-1), 10**digits - 1)
-
-
 def _build_state_context(state):
     lines = []
     lines.append(f"Phase: {state['phase']}")
@@ -137,17 +129,6 @@ def _build_state_context(state):
             lines.append(f"  {status} {e} GeV: target={cfg.get('target_events','?')} "
                          f"collected={cfg.get('collected_events',0)} "
                          f"runs={cfg.get('runs',[])} completed={cfg.get('completed',False)}{cfg_suffix}")
-    return "\n".join(lines)
-
-
-def _build_history_context(history):
-    if not history:
-        return "(No conversation yet)"
-    lines = []
-    for msg in history[-10:]:
-        role = "User" if msg["role"] == "user" else "Agent"
-        content = msg["content"]
-        lines.append(f"{role}: {content}")
     return "\n".join(lines)
 
 
@@ -186,39 +167,18 @@ def _get_step_hint(state, history):
 
 
 def build_full_context(state, history, current_input=None):
-    if current_input is None and history and history[-1]["role"] == "user":
-        current_input = history[-1]["content"]
-        temp_history = history[:-1]
-    else:
-        temp_history = history
-
-    parts = []
-    parts.append("=== Current State ===")
-    parts.append(_build_state_context(state))
-    parts.append("")
-    parts.append("=== Recent Conversation ===")
-    parts.append(_build_history_context(temp_history))
-    parts.append("")
-    if current_input:
-        parts.append("=== Current User Input ===")
-        parts.append(current_input)
-        parts.append("")
-    parts.append("=== Your Task ===")
-    parts.append(_get_step_hint(state, history))
-    parts.append("")
-    parts.append("Output JSON with tool name and parameters.")
-    return "\n".join(parts)
+    return build_prompt_context(
+        _build_state_context(state),
+        history,
+        current_input=current_input,
+        step_hint=_get_step_hint(state, history),
+    )
 
 
 def make_example(state, history, decision, current_input=None):
-    ctx = build_full_context(state, history, current_input)
-    return {
-        "messages": [
-            {"role": "system",    "content": SYSTEM_PROMPT},
-            {"role": "user",      "content": ctx},
-            {"role": "assistant", "content": json.dumps(decision, ensure_ascii=False)},
-        ]
-    }
+    return _make_example(
+        SYSTEM_PROMPT, build_full_context(state, history, current_input), decision
+    )
 
 
 def _emit_energy(examples, state, history, energy, events, t5_x, t5_y, run_number, daq_config=None):
@@ -380,8 +340,6 @@ def generate_workflow_from_mid(energy_list, events_list, start_idx):
 
 
 def main():
-    output_file = Path(__file__).parent / "data" / "EM_scan_data.json"
-    output_file.parent.mkdir(parents=True, exist_ok=True)
     all_ex = []
 
     test_cases = [
@@ -564,7 +522,7 @@ def main():
         ([1, 3, 5, 7, 10],        [100000, 100000, 200000, 200000, 300000],  "1,3GeV 100000 5,7GeV 200000 10GeV 300000"),
 
         # ── 5-6자리 경계 변별 — 같은 config에 5자리·6자리 혼재 (20개) ────
-        # 모델이 0의 개수를 정확히 세어 옮기도록 강제하는 핵심 케이스
+        # 이벤트 수 자릿수가 섞인 사례.
         ([1, 2],                  [80000, 800000],                            "1GeV 80000개 2GeV 800000개"),
         ([1, 2, 3],               [50000, 500000, 100000],                    "1GeV 50000개 2GeV 500000개 3GeV 100000개"),
         ([2, 4, 6],               [90000, 900000, 99000],                     "2GeV 90000 4GeV 900000 6GeV 99000"),
@@ -684,13 +642,7 @@ def main():
     for energy_list, events_list, start_idx in mid_cases:
         all_ex.extend(generate_workflow_from_mid(energy_list, events_list, start_idx))
 
-    with open(output_file, 'w', encoding='utf-8') as f:
-        for ex in all_ex:
-            f.write(json.dumps(ex, ensure_ascii=False) + '\n')
-
-    lengths = [sum(len(m["content"]) for m in ex["messages"]) for ex in all_ex]
-    print(f"Generated {len(all_ex)} samples -> {output_file}")
-    print(f"   char len  max={max(lengths):,}  avg={sum(lengths)/len(lengths):,.0f}")
+    write_dataset("EM_scan_data.json", all_ex)
 
 
 if __name__ == "__main__":

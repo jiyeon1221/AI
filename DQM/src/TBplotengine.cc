@@ -3,9 +3,7 @@
 #include "TSystem.h"
 #include "TStyle.h"
 #include "TPaveStats.h"
-#include "TBufferJSON.h"
 
-#include <fstream>
 #include <cstdio>
 #include <climits>
 
@@ -43,13 +41,11 @@ void TBplotengine::init() {
 
 
     for (int i = 0; i < fNametoPlot.size(); i++) {
-      // std::string aName = fUtility.GetName(aCID);
       std::string aName = fNametoPlot.at(i);
       TBcid aCID = fUtility.GetCID(aName);
       fCIDtoPlot_Ceren.push_back(aCID);
 
       TButility::mod_info aInfo = fUtility.GetInfo(aCID);
-      // std::cout << aName << " "; aCID.print();
 
       if (fCalcInfo == TBplotengine::CalcInfo::kIntADC || fCalcInfo == TBplotengine::CalcInfo::kPeakADC) {
         std::vector<int> interval = fConfig[aName].as<std::vector<int>>();
@@ -112,21 +108,15 @@ void TBplotengine::init() {
     auto tPadRight = fCanvasFull.at(0)->cd(2);
     tPadRight->SetRightMargin(0.13);
 
-    // Per-tower canvases are allocated inside init_Generic() after the tower
-    // list is discovered from the mapping (so the count matches the actual
-    // mapping geometry: 9 for KEK2026 T1..T9, 36 for TB2025 M1-T1..M9-T4, etc.).
+    // 매핑에서 찾은 타워마다 캔버스를 만든다.
     init_Generic();
   } else if (fCaseName == "module") {
 
-    // One canvas with the tower-grid layout (N_x × N_y from the mapping),
-    // every pad holding a tower's IntADC/PeakADC distribution (C blue + S red
-    // overlaid). The canvas and pad geometry are constructed inside
-    // init_module() because the grid dimensions are mapping-driven.
+    // 매핑 배치에 따라 타워별 C/S 분포 격자를 만든다.
     init_module();
   } else if (fCaseName == "heatmap") {
 
-    // For now only MCPPMT (C1..C64 + S1..S64) is wired up. SiPM and other
-    // detectors will follow once their channel naming is finalized.
+    // heatmap은 MCPPMT의 C1~C64와 S1~S64를 지원한다.
     if (fModule != "MCPPMT") {
       std::cerr << "[TBplotengine] --type heatmap currently supports only "
                 << "--module MCPPMT (got --module '" << fModule << "'). "
@@ -150,21 +140,7 @@ void TBplotengine::init() {
 
 void TBplotengine::init_Generic() {
 
-  // ── Data-driven tower discovery ───────────────────────────────────────────
-  // The previous implementation hardcoded plotVec = {"T1",..,"T9"} and a 3x3
-  // grid, which only matched the KEK2026 layout. We now enumerate the loaded
-  // mapping (TButility::GetNameInfo()) and pick up anything that looks like a
-  // tower channel: names ending in "-C" (Cherenkov side) or "-S" (Scintillator
-  // side) with valid (row, col). This covers, with a single code path:
-  //   * KEK2026 KEK_DQM mapping: T1-C..T9-S        -> 3x3 grid, 9 towers
-  //   * TB2025 legacy mapping:   M1-T1-C..M9-T4-S  -> 6x6 grid, 36 towers
-  //   * any future "<prefix>-<tower>-{C,S}" naming
-  // The hyphen-suffix filter intentionally excludes MCPPMT C1..C64 / S1..S64
-  // (which have no "-C"/"-S" suffix), so a mapping that contains both MCPPMT
-  // and tower entries will still produce the correct tower-only full view.
-  // (row, col) for the 2D heatmap come from the mapping CSV; the grid size is
-  // computed from max(row), max(col) so the histogram auto-sizes to whatever
-  // geometry the mapping describes.
+  // 매핑의 -C/-S 채널과 행·열 좌표에서 타워 격자를 구성한다.
   std::vector<std::string> cerenNames, scintNames;
   int maxRow = 0, maxCol = 0;
 
@@ -185,9 +161,7 @@ void TBplotengine::init_Generic() {
     }
   }
 
-  // Lexicographic order so per-tower canvas indices are deterministic across
-  // runs regardless of the mapping's insertion order, and so Ceren[i] / Scint[i]
-  // line up by name root (T1-C with T1-S, M1-T1-C with M1-T1-S, ...).
+  // 이름순으로 정렬해 C와 S 채널 인덱스를 맞춘다.
   std::sort(cerenNames.begin(), cerenNames.end());
   std::sort(scintNames.begin(), scintNames.end());
 
@@ -244,9 +218,7 @@ void TBplotengine::init_Generic() {
     fPlotter_Scint.at(i).hist1D->SetLineColor(kRed);
   }
 
-  // Grid size derived from the mapping. Both axes use the same span so the
-  // heatmap is square-ish; for asymmetric layouts the unused cells just stay
-  // empty (their bin labels are still drawn).
+  // 매핑 범위로 정사각형 heatmap 크기를 정한다.
   const int gridX = std::max(1, maxRow);
   const int gridY = std::max(1, maxCol);
 
@@ -265,8 +237,7 @@ void TBplotengine::init_Generic() {
     f2DHistScint->GetYaxis()->SetBinLabel(i, std::to_string(i).c_str());
   }
 
-  // Per-tower 1D canvases, sized to the smaller of the two lists so Draw/Update
-  // can safely pair Ceren[idx] with Scint[idx] without out-of-range access.
+  // C/S 양쪽에 존재하는 타워만 1D 캔버스로 만든다.
   const size_t nTowers = std::min(fPlotter_Ceren.size(), fPlotter_Scint.size());
   for (size_t i = 0; i < nTowers; ++i) {
     std::string aCanvasName = "fCanvas_Tower" + std::to_string(i + 1);
@@ -280,21 +251,7 @@ void TBplotengine::init_Generic() {
 
 void TBplotengine::init_module() {
 
-  // ── --type module: per-tower distribution grid ────────────────────────────
-  // This mirrors init_Generic's tower discovery (mapping-driven, name suffix
-  // -C/-S, valid (row,col)) but with two differences:
-  //   1. No 2D heatmap is built. Each pad in the canvas holds a 1D IntADC /
-  //      PeakADC distribution instead of a colored bin.
-  //   2. An optional --module <prefix> filter restricts the towers to those
-  //      whose names start with "<prefix>-". This makes one binary serve:
-  //        * KEK 2026: fModule == ""        → all 9 towers T1..T9 → 3x3 grid
-  //        * CERN  2025: fModule == "M1"    → M1's 4 towers       → 2x2 grid
-  //      The grid is auto-sized from min..max of (row, col) within the
-  //      filtered set, so M1 (at rows 1..2, cols 5..6 of the 6x6 master grid)
-  //      collapses to a clean 2x2 view local to that module.
-  // The pad index is computed from (info.row, info.col) using ROOT's
-  // Divide(nx, ny) numbering (left-to-right, top-to-bottom from pad 1), so
-  // physical tower positions on screen match the heatmap exactly.
+  // module 유형은 선택한 접두사의 타워별 1D 분포 격자를 만든다.
 
   const bool hasFilter = !fModule.empty();
   const std::string filterPrefix = hasFilter ? fModule + "-" : "";
@@ -337,19 +294,13 @@ void TBplotengine::init_module() {
     return;
   }
 
-  // Local grid: collapse the absolute (row, col) into 1..N starting at
-  // (minRow, minCol). For the KEK case this is a no-op (min == 1 already);
-  // for "--module M1" on TB2025 it produces a clean 2x2 instead of an offset
-  // window into the master 6x6.
+  // 절대 매핑 좌표를 선택 모듈의 로컬 격자로 변환한다.
   fGridX_module = maxRow - minRow + 1;
   fGridY_module = maxCol - minCol + 1;
   const int rowOffset = minRow - 1;
   const int colOffset = minCol - 1;
 
-  // Lay out the canvas. The pad numbering goes left-to-right top-to-bottom
-  // starting at 1, so Divide(nx, ny) maps to (cols=nx, rows=ny). We translate
-  // mapping coordinates → pad index in Draw/Update via:
-  //    pad = (gridY - localCol) * gridX + localRow
+  // ROOT의 왼쪽 위 기준 pad 번호로 좌표를 변환한다.
   fCanvas = new TCanvas("fCanvasModule", "fCanvasModule",
                         std::max(700, 400 * fGridX_module),
                         std::max(700, 400 * fGridY_module));
@@ -359,7 +310,7 @@ void TBplotengine::init_module() {
     const std::string& aCName = cerenNames[i];
     TBcid aCCID = fUtility.GetCID(aCName);
     TButility::mod_info aCInfo = fUtility.GetInfo(aCName);
-    // Bake the local offset back into info so Draw/Update can use it directly.
+    // 그리기 단계에서 사용할 로컬 좌표를 저장한다.
     aCInfo.row -= rowOffset;
     aCInfo.col -= colOffset;
 
@@ -406,9 +357,7 @@ void TBplotengine::init_module() {
 
 void TBplotengine::init_MCPPMT() {
 
-  // Channel-name list is hardcoded (C1..C64 / S1..S64). The MCPPMT layout is
-  // not expected to grow new C*/S* names; if it ever does, this is the only
-  // place to extend.
+  // MCPPMT 채널명은 C1~C64와 S1~S64이다.
   for (int i = 1; i <= 64; ++i) {
     const std::string aCName = "C" + std::to_string(i);
     const TBcid aCCID = fUtility.GetCID(aCName);
@@ -447,8 +396,7 @@ void TBplotengine::init_MCPPMT() {
     fPlotter_Scint.back().hist1D->SetLineColor(kRed);
   }
 
-  // 8x8 heatmaps. Bin coords use (column, row) to match the (col, row) order
-  // already established by the full-mode Fill at line ~260.
+  // 매핑의 열·행 좌표로 8×8 heatmap을 만든다.
   f2DHistCeren = new TH2D("MCPPMT_C", "MCPPMT C;column;row", 8, 0.5, 8.5, 8, 0.5, 8.5);
   f2DHistCeren->SetStats(0);
 
@@ -467,9 +415,7 @@ void TBplotengine::init_MCPPMT() {
 
 
 double TBplotengine::GetPeakADC(std::vector<short> waveform, int xInit, int xFin, int pedBins) {
-  // Pedestal averaged over the first `pedBins` waveform bins (skipping bin
-  // 0). The window is per-channel configurable; see TBpedConfig and
-  // PedestalBins in config_general.yml. Default 100 bins.
+  // 채널별 설정 구간의 파형 평균을 pedestal로 사용한다.
   if (pedBins <= 0 || static_cast<size_t>(pedBins) >= waveform.size())
     pedBins = 100;
 
@@ -530,10 +476,7 @@ void TBplotengine::Fill(TBevt<TBwaveform> anEvent) {
     }
 
   } else if (fCaseName == "full" || fCaseName == "heatmap") {
-    // heatmap (MCPPMT) reuses the full-mode Fill: each channel gets a 1D
-    // distribution accumulator plus a running fill into the 2D heatmap keyed
-    // by (col, row) from the mapping CSV. Update() then overwrites the 2D
-    // bins with the per-channel hist1D->GetMean() value.
+    // 채널별 평균을 매핑 좌표의 heatmap bin에 반영한다.
 
     for (int i = 0; i < fPlotter_Ceren.size(); i++) {
       double value = GetValue(anEvent.GetData(fPlotter_Ceren.at(i).cid).waveform(), fPlotter_Ceren.at(i).xInit, fPlotter_Ceren.at(i).xFin, fPlotter_Ceren.at(i).name);
@@ -553,7 +496,7 @@ void TBplotengine::Fill(TBevt<TBwaveform> anEvent) {
       }
     }
   } else if (fCaseName == "module") {
-    // Per-tower 1D distributions only — no 2D heatmap is built in module mode.
+    // module 유형은 타워별 1D 분포만 채운다.
     for (size_t i = 0; i < fPlotter_Ceren.size(); ++i) {
       const double value = GetValue(anEvent.GetData(fPlotter_Ceren.at(i).cid).waveform(),
                                     fPlotter_Ceren.at(i).xInit, fPlotter_Ceren.at(i).xFin,
@@ -600,15 +543,7 @@ void TBplotengine::Draw() {
     fCanvasFull.at(0)->cd(2);
     f2DHistScint->Draw("colz text");
 
-    // full mode also draws per-tower 1D distributions on dedicated canvases.
-    // heatmap mode only produces the 2D heatmap pair, so skip the per-channel
-    // canvas loop (we don't allocate per-channel canvases for MCPPMT's 64+64
-    // channels).
-    //
-    // Bound by min(Ceren, Scint, allocated per-tower canvases). The allocated
-    // count is fCanvasFull.size() - 1 (slot 0 is the main heatmap canvas) and
-    // init_Generic() already sizes it to min(C, S), but we keep this defensive
-    // since a future caller may push extra canvases.
+    // full 유형만 타워별 전용 1D 캔버스를 그린다.
     if (fCaseName == "full") {
       const size_t nTowerCanvas = fCanvasFull.size() > 1 ? fCanvasFull.size() - 1 : 0;
       const size_t nTowers = std::min({fPlotter_Ceren.size(), fPlotter_Scint.size(), nTowerCanvas});
@@ -623,12 +558,7 @@ void TBplotengine::Draw() {
       }
     }
   } else if (fCaseName == "module") {
-    // Per-tower distribution grid. Pad index for (info.row, info.col) in a
-    // Divide(gridX, gridY) canvas (left-to-right, top-to-bottom, 1-based):
-    //   pad = (gridY - info.col) * gridX + info.row
-    // info.row/info.col were already remapped to local (1..gridX, 1..gridY)
-    // coordinates in init_module(), so this works for both the KEK "all
-    // towers" case and the CERN "one module's towers" case.
+    // 로컬 행·열 좌표에서 module 캔버스의 pad 번호를 계산한다.
     for (size_t i = 0; i < fPlotter_Ceren.size(); ++i) {
       const auto& info = fPlotter_Ceren.at(i).info;
       if (info.row < 1 || info.row > fGridX_module ||
@@ -643,13 +573,11 @@ void TBplotengine::Draw() {
           info.col < 1 || info.col > fGridY_module) continue;
       const int pad = (fGridY_module - info.col) * fGridX_module + info.row;
       fCanvas->cd(pad);
-      // "sames" overlays the Scint distribution on top of the Ceren one drawn
-      // just above, sharing the pad and stats box positions.
+      // C 분포 위에 S 분포를 겹쳐 그린다.
       fPlotter_Scint.at(i).hist1D->Draw("Hist & sames");
     }
   }
 
-  // if (fUsingAUX) gSystem->ProcessEvents();
   gSystem->Sleep(1000);
 }
 
@@ -682,9 +610,7 @@ void TBplotengine::Update() {
 
           if (fCalcInfo == TBplotengine::CalcInfo::kIntADC || fCalcInfo == TBplotengine::CalcInfo::kPeakADC) {
             fCanvas->Update();
-            // TPaveStats* stat = (TPaveStats*)fCanvas->GetPrimitive("stats");
             TPaveStats* stat = (TPaveStats*)fPlotter_Ceren.at(i).hist1D->FindObject("stats");
-            // stat->SetName(fPlotter_Ceren.at(i).hist1D->GetName() + (TString)"_stat");
             stat->SetTextColor(fPlotter_Ceren.at(i).hist1D->GetLineColor());
             stat->SetY2NDC(1. - stat_height * i);
             stat->SetY1NDC(1 - stat_height * (i + 1));
@@ -705,10 +631,7 @@ void TBplotengine::Update() {
     const std::string scintLabel = (fCaseName == "heatmap") ? " MCPPMT S - "
                                                             : " SCINTILLATION - ";
 
-    // Title entry-count is sampled from the first plotter, but only if the
-    // list is non-empty (an empty list happens when init_Generic() found no
-    // tower-like channels in the loaded mapping). Falling through with empty
-    // lists used to throw out_of_range from .at(0).
+    // 채널이 있으면 첫 분포의 항목 수를 제목에 표시한다.
     const int cerenEntries = fPlotter_Ceren.empty() ? 0 : (int)fPlotter_Ceren.front().hist1D->GetEntries();
     const int scintEntries = fPlotter_Scint.empty() ? 0 : (int)fPlotter_Scint.front().hist1D->GetEntries();
 
@@ -728,9 +651,7 @@ void TBplotengine::Update() {
 
     fCanvasFull.at(0)->Update();
 
-    // Per-channel 1D canvases exist only for "full" (per-tower), not for
-    // "heatmap" (MCPPMT has 64+64 channels which we deliberately do not split
-    // into per-channel canvases). Bounds are the same as in Draw().
+    // full 유형의 타워별 1D 캔버스만 갱신한다.
     if (fCaseName == "full") {
       const size_t nTowerCanvas = fCanvasFull.size() > 1 ? fCanvasFull.size() - 1 : 0;
       const size_t nTowers = std::min({fPlotter_Ceren.size(), fPlotter_Scint.size(), nTowerCanvas});
@@ -749,16 +670,13 @@ void TBplotengine::Update() {
 
     if (fIsFirst)fIsFirst = false;
   } else if (fCaseName == "module") {
-    // Refresh the grid: redraw each pad's distributions and update the canvas
-    // title with the current entry count. Pad index logic matches Draw().
+    // 각 pad의 분포와 캔버스 항목 수를 갱신한다.
     const int cerenEntries = fPlotter_Ceren.empty() ? 0 : (int)fPlotter_Ceren.front().hist1D->GetEntries();
     const std::string moduleLabel = fModule.empty() ? std::string("All") : fModule;
     fCanvas->SetTitle((TString)("Run " + std::to_string(fRunNum) + " " + moduleLabel +
                                 " - " + std::to_string(cerenEntries)));
 
-    // Helper: pad index from a (row, col) plotter, returning -1 if the cell
-    // sits outside the local grid (defensive — shouldn't happen because
-    // init_module already filtered/offset coords).
+    // 로컬 격자 밖의 좌표는 -1을 반환한다.
     auto padFor = [this](const TButility::mod_info& info) -> int {
       if (info.row < 1 || info.row > fGridX_module ||
           info.col < 1 || info.col > fGridY_module) return -1;
@@ -775,17 +693,11 @@ void TBplotengine::Update() {
       const int pad = padFor(fPlotter_Scint.at(i).info);
       if (pad < 0) continue;
       fCanvas->cd(pad);
-      // "sames" preserves the C stat box already drawn so we have two stacked
-      // TPaveStats per pad (one per histogram); we reposition them just below.
+      // C와 S 통계 상자를 함께 유지한다.
       fPlotter_Scint.at(i).hist1D->Draw("Hist & sames");
     }
 
-    // First call materializes the TPaveStats objects via canvas Update. On
-    // the very first cycle the C and S stat boxes are both placed by ROOT at
-    // the default (top-right) position and overlap. Reposition them once: C
-    // sits on top in blue, S directly below in red, both narrower so the
-    // bin-shape underneath is still visible. ROOT persists the NDC coords
-    // with the histogram, so subsequent updates keep the layout for free.
+    // 첫 갱신에서 C와 S 통계 상자를 위아래로 배치한다.
     fCanvas->Update();
 
     if (fIsFirst) {
@@ -817,21 +729,14 @@ void TBplotengine::Update() {
     }
   }
 
-  // fCanvas exists for single + module modes (each uses a single, possibly
-  // subdivided, canvas). full / heatmap render onto fCanvasFull (already
-  // updated in the case-specific block above), so touching fCanvas there
-  // would dereference null.
+  // single과 module 유형의 단일 캔버스만 여기서 갱신한다.
   if (fCaseName == "single" || fCaseName == "module") {
     fCanvas->cd();
     fCanvas->Update();
     if (fDraw) fCanvas->Pad()->Draw();
   }
 
-  // ── Output: atomic ROOT write + per-canvas JSON dump ───────────────────────
-  // ROOT is written to <name>.tmp.root then renamed; JSONs are emitted by
-  // WriteCanvasesAsJSON() (also atomic). This lets the web UI poll mid-run
-  // without ever reading a half-written file. full/heatmap both publish via
-  // fCanvasFull; single uses fCanvas.
+  // 임시 ROOT 파일을 완성한 뒤 최종 이름으로 바꾼다.
   std::string basePrefix;
   if (fCaseName == "full") {
     basePrefix = "Run" + std::to_string(fRunNum) + "_" + fCaseName + "_" + fMethod;
@@ -860,9 +765,7 @@ void TBplotengine::Update() {
     }
     std::rename(tmpOutput.Data(), output.Data());
   } else if (fCaseName == "module") {
-    // Module mode uses fCanvas (one subdivided canvas). When --module is not
-    // given (KEK case) we tag the file with "All" so the filename doesn't end
-    // in a stray underscore.
+    // 모듈을 지정하지 않으면 출력 이름에 All을 사용한다.
     const std::string moduleTag = fModule.empty() ? std::string("All") : fModule;
     basePrefix = "Run" + std::to_string(fRunNum) + "_" + fCaseName + "_" + fMethod + "_" + moduleTag;
     if (fAuxCut) basePrefix += "_AuxCut";
@@ -889,12 +792,6 @@ void TBplotengine::Update() {
     std::rename(tmpOutput.Data(), output.Data());
   }
 
-  WriteCanvasesAsJSON("./output", basePrefix);
-
-  // if (fUsingAUX) gSystem->ProcessEvents();
-  // else           fApp->Run(false);
-
-  // std::cout << fLive << " " << fUsingAUX << std::endl;
 
   if (fDraw) {
     if (fLive && fUsingAUX) gSystem->ProcessEvents();
@@ -946,29 +843,6 @@ void TBplotengine::SaveAs(TString output = "")
   }
 
   outoutFile->Close();
-}
-
-void TBplotengine::WriteCanvasesAsJSON(const std::string& outDir, const std::string& basePrefix)
-{
-  auto dump = [&](TCanvas* c) {
-    if (!c) return;
-    TString json = TBufferJSON::ToJSON(c);
-    std::string canvasName = c->GetName();
-    std::string finalPath = outDir + "/" + basePrefix + "_" + canvasName + ".json";
-    std::string tmpPath   = finalPath + ".tmp";
-    {
-      std::ofstream ofs(tmpPath);
-      if (!ofs) return;
-      ofs << json.Data();
-    }
-    std::rename(tmpPath.c_str(), finalPath.c_str());
-  };
-
-  if (fCaseName == "full" || fCaseName == "heatmap") {
-    for (auto* c : fCanvasFull) dump(c);
-  } else {
-    dump(fCanvas);
-  }
 }
 
 std::vector<int> TBplotengine::GetUniqueMID() {

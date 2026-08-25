@@ -45,33 +45,16 @@ int   azdkren_motor_free   (AZDKREN *drv);
 int   azdkren_motor_on     (AZDKREN *drv);
 int   azdkren_home         (AZDKREN *drv, int wait);
 
-/*
- * azdkren_set_home_here — declare current position as the coordinate origin.
- *   The motor does NOT move; only the coordinate system is redefined.
- *   save_to_nvm: 1 → persist to flash (survives power-off), 0 → RAM only.
- */
+/* 현재 위치를 좌표 원점으로 지정한다. save_to_nvm은 영구 저장 여부이다. */
 int   azdkren_set_home_here(AZDKREN *drv, int save_to_nvm);
 
-/* ── Motion (Direct Data Operation / TRIG method) ───────────────────────── */
-/*
- * azdkren_move_abs — absolute position move
- *   pos_mm       : target position from home [mm]
- *   speed_mm_s   : travel speed [mm/s]
- *   acc_hz_s     : acceleration rate [Hz/s]  (steps/s²)
- *   dec_hz_s     : deceleration rate [Hz/s]
- *   current_pct  : motor operating current [0–100 %]
- *   wait         : 1 = block until IN-POS, 0 = return immediately
- *   returns 0 on success, -1 on error / timeout / alarm
- */
+/* 원점 기준 절대 위치로 이동한다. */
 int   azdkren_move_abs(AZDKREN *drv,
                        float pos_mm,   float speed_mm_s,
                        float acc_hz_s, float dec_hz_s,
                        float current_pct, int wait);
 
-/*
- * azdkren_move_rel — relative move from current feedback position
- *   delta_mm : displacement [mm]  (positive = forward, negative = reverse)
- */
+/* 현재 피드백 위치를 기준으로 상대 이동한다. */
 int   azdkren_move_rel(AZDKREN *drv,
                        float delta_mm, float speed_mm_s,
                        float acc_hz_s, float dec_hz_s,

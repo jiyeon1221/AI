@@ -1,20 +1,5 @@
 #!/usr/bin/env python3
-"""Position Scan Agent — 센터 타워와 이웃 타워의 peakADC가 교차하는 경계를 찾아
-   타워의 horizontal/vertical 센터를 결정한다.
-
-흐름(calib_scan_agent 구조를 그대로 따름):
-  센터 타워 / 방향(horizontal·vertical) / 채널(C·S) / 에너지 / 이벤트 /
-  estimated center (x,y) / 이동 간격(interval)을 입력받은 뒤,
-  estimated center에서 한쪽(neg) 방향으로 interval씩 이동하며 매 위치에서 run을 받고,
-  센터 타워와 그 방향 이웃 타워의 peakADC(Mean, DQM valley-cut)가 교차하는 지점을
-  선형보간으로 찾는다. 그 다음 반대(pos) 방향으로 같은 작업을 반복해 두 경계를 얻고,
-  두 경계의 평균을 센터로 산출해 JSON 파일로 저장한다.
-
-이동은 base 공통 패턴을 따른다: X축은 모터로 자동 이동(1a-i), Y축은 사용자 수동(1a-ii).
-
-position_calculator는 사용하지 않는다 — 이동 위치는 estimated center + interval로만 계산하고,
-이웃 타워의 "이름"만 그리드 인접(T{n} 인덱스)으로 찾는다.
-"""
+"""이웃 타워와의 peakADC 교차 경계로 타워 중심을 찾는 스캔 Agent."""
 
 import json
 import sys
@@ -23,17 +8,13 @@ from pathlib import Path
 from datetime import datetime
 
 from tools.daq_tool import DAQRunTool
-import tools.motor_control_tool as motor
 
 from .base_agent import BaseAgent
 sys.path.append(str(Path(__file__).parent.parent))
 from config import AGENT_MODELS, MSG_PLOT_CONFIRM, PROJECT_ROOT
 
 
-# ── 3x3 그리드 (T{n} → grid col/row). position_calculator와 무관한 순수 인덱스 매핑. ──
-#   T1 T2 T3   (row 0)
-#   T4 T5 T6   (row 1)
-#   T7 T8 T9   (row 2)
+# 타워 번호를 3×3 격자 좌표로 변환한다.
 def _tower_to_grid(tower: str) -> Tuple[int, int]:
     n = int(tower[1])
     col = (n - 1) % 3
@@ -47,10 +28,7 @@ def _grid_to_tower(col: int, row: int) -> Optional[str]:
     return f"T{row * 3 + col + 1}"
 
 
-# 스윕 방향(neg=왼쪽/위, pos=오른쪽/아래)별 스테이지 좌표 이동 부호는 하드코딩하지 않고
-# Position Calculator의 타워 좌표 차이 sign(neighbor − center)로 도출한다 (_compute_sweep_signs).
-# 즉 "표에서 그 이웃 타워로 빔을 옮기려면 스테이지를 어느 방향으로 움직여야 하는가"를
-# position calc 규약 그대로 따른다. (스캔 위치 자체는 여전히 est_center + interval로만 계산.)
+# 스윕 이동 부호는 중심과 이웃 타워의 계산 좌표 차이로 정한다.
 
 MESSAGE_MOVE_REQ = "X축 자동 이동 완료 ({x:.3f} mm). Y축을 {y:.3f}으로 이동해주세요."
 
@@ -104,7 +82,7 @@ class PositionScanAgent(BaseAgent):
             neighbor_neg = _grid_to_tower(col, row - 1)   # 위쪽
             neighbor_pos = _grid_to_tower(col, row + 1)   # 아래쪽
 
-        # 이동 부호(neg/pos)를 Position Calculator 기준으로 도출
+        # 계산된 타워 좌표에서 양방향 이동 부호를 구한다.
         self._sign_neg, self._sign_pos = self._compute_sweep_signs(
             center_tower, direction, neighbor_neg, neighbor_pos
         )
@@ -112,6 +90,8 @@ class PositionScanAgent(BaseAgent):
         self.state = {
             "phase": "scanning",
             "center_tower": center_tower,
+            # DQM 실시간 캔버스가 참조하는 현재 타워.
+            "current_tower": center_tower,
             "channel": channel,
             "direction": direction,
             "beam_energy": beam_energy,
@@ -123,14 +103,14 @@ class PositionScanAgent(BaseAgent):
             "neighbor_neg": neighbor_neg,
             "neighbor_pos": neighbor_pos,
 
-            # 스윕 진행 상태
+            # 스윕 진행 상태.
             "sweep": "neg",            # "neg" → "pos"
             "step_idx": 0,             # 이번 스윕에서 estimated center로부터 이동한 스텝 수
             "samples": [],             # [{sweep, step, coord, center_adc, neighbor_adc, diff, run}]
             "boundary_neg": None,      # 왼쪽 / 위 경계 좌표
             "boundary_pos": None,      # 오른쪽 / 아래 경계 좌표
 
-            # per-step 부킹 (calib과 동일: X 모터 자동 + Y 수동)
+            # 각 단계의 모터와 확인 상태.
             "x_moved": False,
             "y_confirmed": False,
             "needs_plot_confirm": False,
@@ -162,14 +142,14 @@ class PositionScanAgent(BaseAgent):
 
         sign_neg = _sign_toward(neighbor_neg)
         sign_pos = _sign_toward(neighbor_pos)
-        # edge 타워(이웃 없음) fallback: 반대 부호, 둘 다 없으면 관례값
+        # 가장자리에서는 반대편 부호나 기본 방향을 사용한다.
         if sign_neg is None:
             sign_neg = -sign_pos if sign_pos else -1.0
         if sign_pos is None:
             sign_pos = -sign_neg if sign_neg else +1.0
         return sign_neg, sign_pos
 
-    # ── 좌표/이웃 헬퍼 ───────────────────────────────────────────
+    # 좌표와 이웃 타워 계산.
 
     def _axis_key(self) -> str:
         return "x" if self.state["direction"] == "horizontal" else "y"
@@ -191,7 +171,7 @@ class PositionScanAgent(BaseAgent):
     def _current_neighbor(self) -> Optional[str]:
         return self.state["neighbor_neg"] if self.state["sweep"] == "neg" else self.state["neighbor_pos"]
 
-    # ── peakADC 측정 (sim agent가 이 메서드만 override) ──────────
+    # peakADC 측정. 시뮬레이션은 이 메서드만 재정의한다.
 
     def _measure_peakadc(self, run_number: int, tower: str, channel: str) -> Optional[float]:
         """DQM JSON valley-cut peakADC Mean (config 구간 기반). hv_equalization과 동일 소스."""
@@ -199,7 +179,7 @@ class PositionScanAgent(BaseAgent):
         mean, _ = calculate_valley_cut_average(run_number, channel, tower)
         return mean
 
-    # ── System Prompt ───────────────────────────────────────────
+    # 시스템 프롬프트.
 
     def _get_system_prompt(self) -> str:
         return """You are Position Scan Agent for test beam experiments.
@@ -237,7 +217,7 @@ Proceed as the step hint tells you.
 5. All "message" field values MUST be written in Korean (한국어) only. Never use Chinese characters (한자).
 """
 
-    # ── Step hint ───────────────────────────────────────────────
+    # 현재 단계 안내.
 
     def _get_step_hint(self) -> str:
         st = self.state
@@ -257,10 +237,10 @@ Proceed as the step hint tells you.
             return "왼쪽" if self.state["sweep"] == "neg" else "오른쪽"
         return "위쪽" if self.state["sweep"] == "neg" else "아래쪽"
 
-    # ── State context ───────────────────────────────────────────
+    # 상태 컨텍스트.
 
     def _build_state_context(self) -> str:
-        # LLM은 다음 행동(이동/daq/plot)만 결정한다 — 측정/경계/스윕 등 코드 소유 정보는 노출하지 않는다.
+        # 모델에는 다음 행동에 필요한 상태만 제공한다.
         st = self.state
         pos = self._position_for_current_step()
         lines = []
@@ -271,87 +251,38 @@ Proceed as the step hint tells you.
                      f"[X moved: {st.get('x_moved', False)}, Y confirmed: {st.get('y_confirmed', False)}]")
         return "\n".join(lines)
 
-    def build_full_context(self, current_input: Optional[str] = None) -> str:
-        if current_input is None and self.conversation_history:
-            if self.conversation_history[-1]["role"] == "user":
-                current_input = self.conversation_history[-1]["content"]
-                temp_history = self.conversation_history[:-1]
-            else:
-                temp_history = self.conversation_history
-        else:
-            temp_history = self.conversation_history
-
-        parts = []
-        parts.append("=== Current State ===")
-        parts.append(self._build_state_context())
-        parts.append("")
-        parts.append("=== Recent Conversation ===")
-        history_lines = []
-        if not temp_history:
-            history_lines.append("(No conversation yet)")
-        else:
-            for msg in temp_history[-10:]:
-                role = "User" if msg["role"] == "user" else "Agent"
-                history_lines.append(f"{role}: {msg['content']}")
-        parts.append("\n".join(history_lines))
-        parts.append("")
-        if current_input:
-            parts.append("=== Current User Input ===")
-            parts.append(current_input)
-            parts.append("")
-        parts.append("=== Your Task ===")
-        parts.append(self._get_step_hint())
-        parts.append("")
-        parts.append("Output JSON with tool name and parameters.")
-        return "\n".join(parts)
-
-    # ── Tool 실행 (motor + daq) ─────────────────────────────────
+    # 모터와 DAQ 도구 실행.
 
     def _execute_tool(self, tool_name: str, params: Dict) -> str:
         if tool_name == "none":
             return "no_tool_executed"
 
         if tool_name == "motor_x_move_tool":
-            x = self._motor_x_for_current_step()
-            self.io.send_tool_output(f"[Motor] X축 이동 시작 (Position Scan): {x:.3f} mm")
-            def _do_move():
-                ok, msg = motor.move_x(x)
-                if not ok:
-                    raise RuntimeError(msg)
-                return msg
-            result = self._run_tool_with_retry(_do_move, "motor_x_move_tool")
-            self.io.send_tool_output(f"[Motor] {result}")
+            result = self._run_motor_x_move("Position Scan")
             self.state["x_moved"] = True
             return result
 
         if tool_name == "daq_run_tool":
-            self._apply_daq_params_from_state(
+            result, run_number = self._run_daq_from_state(
                 params,
                 events=self.state.get("target_events"),
                 beam_energy=self.state.get("beam_energy"),
                 program="Position Scan",
                 pos=self._position_for_current_step(),
             )
-            result = self._run_tool_with_retry(
-                lambda: self.daq_tool.execute(params, line_callback=self.io.send_tool_output),
-                "daq_run_tool",
-            )
-            run_number = self._extract_run_number(result)
             if run_number:
-                self.state["last_run_number"] = run_number
                 self.log(f"DAQ Run {run_number} 완료: {self._position_for_current_step()}, "
                          f"{params.get('events', 0)} events")
-            self.state["needs_plot_confirm"] = True
             return result
 
         return f"Error: Unknown tool {tool_name}"
 
-    # ── Guards ──────────────────────────────────────────────────
+    # 실행 순서 검증.
 
     def _guard_tool(self, tool_name: str, decision) -> Optional[str]:
-        if self.state.get("needs_plot_confirm"):
-            return (f"needs_plot_confirm=True — DO NOT call {tool_name}. "
-                    f'Send: {{"message": "{MSG_PLOT_CONFIRM}"}}')
+        rejection = self._plot_confirm_pending_rejection(tool_name)
+        if rejection:
+            return rejection
         if tool_name == "motor_x_move_tool" and self.state.get("x_moved"):
             return f"X-axis already moved. Send Y-axis move message. {self._get_step_hint()}"
         if tool_name == "daq_run_tool" and not self.state.get("y_confirmed"):
@@ -359,19 +290,25 @@ Proceed as the step hint tells you.
         return None
 
     def _guard_ai_message(self, message: str) -> Optional[str]:
-        if MSG_PLOT_CONFIRM in message and not self.state.get("needs_plot_confirm"):
-            return f"needs_plot_confirm=False — DO NOT send plot confirmation. {self._get_step_hint()}"
+        rejection = super()._guard_ai_message(message)
+        if rejection:
+            return rejection
+        # DAQ 실행 후에는 플롯 확인 메시지만 허용한다.
+        if self.state.get("needs_plot_confirm") and message != MSG_PLOT_CONFIRM:
+            return (f"needs_plot_confirm=True — the ONLY valid message now is the plot "
+                    f'confirmation: {{"message": "{MSG_PLOT_CONFIRM}"}}. Do not send any other '
+                    f"message (e.g. a position move message). {self._get_step_hint()}")
         return None
 
-    # ── 사용자 입력 처리 (위치 확인 + plot 확인 → 측정/판정/이동) ──
+    # 위치와 플롯 확인 입력 처리.
 
     def _on_user_input(self, user_input: str):
-        # 1) Y축 이동 확인 (X 모터 이동 완료 후)
+        # X축 이동 후 Y축 이동 확인을 기록한다.
         if self.state.get("x_moved") and not self.state.get("y_confirmed"):
             self.state["y_confirmed"] = True
             self.log(f"위치 확인: {self._position_for_current_step()}")
             return
-        # 2) DAQ 후 plot 확인 → 측정 + cross 판정 + 다음 단계
+        # 플롯 확인 후 ADC를 측정하고 경계를 판정한다.
         if self.state.get("needs_plot_confirm"):
             self.state["needs_plot_confirm"] = False
             self._measure_and_advance()
@@ -410,7 +347,7 @@ Proceed as the step hint tells you.
             f"{center_tower}{channel}={c_adc:.1f}, {neighbor}{channel}={n_adc:.1f} | diff={diff:.1f}"
         )
 
-        # cross 판정: 직전 diff>0, 현재 diff<=0 → 두 점 선형보간
+        # ADC 차이의 부호가 바뀌면 두 점 사이를 선형 보간한다.
         prev = self._prev_sample_this_sweep()
         crossed = prev is not None and prev["diff"] > 0 and diff <= 0
         if crossed:
@@ -420,7 +357,7 @@ Proceed as the step hint tells you.
             self._record_boundary(boundary)
             return
 
-        # cross 없이 max_steps 도달 → 경계 미발견
+        # 최대 이동 횟수까지 교차점이 없으면 경계 탐색을 종료한다.
         if st["step_idx"] + 1 >= st["max_steps"]:
             self.log(f"WARNING: {self._sweep_label()} 스윕 max_steps({st['max_steps']}) 도달 — 경계 미발견")
             self.io.send_ai_message(
@@ -429,7 +366,7 @@ Proceed as the step hint tells you.
             self._record_boundary(None)
             return
 
-        # 한 칸 더 이동
+        # 다음 측정 위치로 이동한다.
         st["step_idx"] += 1
         self._reset_step_position()
 
@@ -448,7 +385,7 @@ Proceed as the step hint tells you.
                 self.io.send_ai_message(
                     f"✅ {self._sweep_label()} 경계 발견: {self._axis_key()}={boundary:.3f} mm"
                 )
-            # 반대 방향 스윕으로 전환 (estimated center로 복귀)
+            # 중심으로 돌아가 반대 방향 스윕을 시작한다.
             st["sweep"] = "pos"
             st["step_idx"] = 0
             self._reset_step_position()
@@ -465,7 +402,7 @@ Proceed as the step hint tells you.
                 )
             self._finalize()
 
-    # ── crossing 플롯 (경계 발견 시 왜 여기인지 시각화) ───────────
+    # ADC 교차점 플롯.
 
     def _plot_crossing(self, boundary: float):
         """이번 스윕에서 센터/이웃 타워 peakADC가 교차하는 지점을 그린다.
@@ -503,7 +440,7 @@ Proceed as the step hint tells you.
             ax.plot(coords, n_adc, "-s", color="#dd8452", markersize=6,
                     label=f"{neighbor}{channel} (neighbor)")
 
-            # 교차하는 마지막 두 점 구간 강조 + 경계 수직선
+            # 교차 구간과 계산된 경계를 표시한다.
             cross_seg = None
             for i in range(1, len(samples)):
                 if samples[i - 1]["diff"] > 0 and samples[i]["diff"] <= 0:
@@ -535,7 +472,7 @@ Proceed as the step hint tells you.
         except Exception as e:
             self.log(f"WARNING: crossing plot 생성 실패: {e}")
 
-    # ── 결과 산출 + 파일 저장 ────────────────────────────────────
+    # 결과 계산과 파일 저장.
 
     def _finalize(self):
         st = self.state
@@ -607,13 +544,13 @@ Proceed as the step hint tells you.
     def _fmt(v: Optional[float]) -> str:
         return f"{v:.3f}" if v is not None else "N/A(미발견)"
 
-    # ── State 보호: 이 agent는 LLM의 update_state를 받지 않는다 ──
+    # 모델의 상태 변경 요청을 차단한다.
 
     def _update_state(self, updates: Dict[str, Any]):
         for key, value in updates.items():
             self.log(f"WARNING: LLM tried to update '{key}' = {value} — rejected (코드 소유)")
 
-    # ── 공용 드라이버 hooks ──────────────────────────────────────
+    # BaseAgent 실행 루프용 훅.
 
     def _print_banner(self):
         print(f"\n{'='*70}\n⚡ Position Scan Agent — {self.state['center_tower']} ({self.state['direction']})\n{'='*70}")

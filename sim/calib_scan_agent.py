@@ -22,7 +22,7 @@ class CalibScanSimAgent(SimExecMixin, CalibScanAgent):
         if tool_name == "motor_x_move_tool":
             tower = self._current_tower_name()
             x = self._motor_x_for_current_step()
-            # override(state 기준 x) 후 표시 — 표시값과 실제 이동값 일치.
+            # 상태의 X 좌표로 시뮬레이션 매개변수를 확정한다.
             self._sim_emit_tool_call(tool_name, {"x": x})
             self.io.send_tool_output(f"[Motor] X축 이동 시작 ({tower}): {x:.3f} mm")
             result = self._sim.motor_move(x, tower)

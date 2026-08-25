@@ -2,7 +2,7 @@
 """
 HV Equalization Agent
 단일 타워의 HV Equalization 수행. calib_scan_agent 구조를 그대로 따름.
-컨트롤러(hv_equalization_scan.py)가 타워를 순서대로 호출함.
+컨트롤러(agents/agent_runner.py의 run_agent_thread)가 타워를 순서대로 호출함.
 """
 
 import json
@@ -14,7 +14,6 @@ from datetime import datetime
 
 from tools.daq_tool import DAQRunTool
 from tools.hv_control_tool import HVControlTool
-import tools.motor_control_tool as motor
 from tools.position_calculator_tool import calculate_position
 from tools.hv_equalization_tool import (
     hv_equalization_suggest,
@@ -90,8 +89,7 @@ class HVEqualizationAgent(BaseAgent):
             "y_confirmed": False,
             "needs_suggest": False,
             "needs_plot_confirm": False,
-            # 승인 단계에서 사용자가 실제로 '완료'를 눌렀는지(코드가 판정).
-            # phase=="approving"만으로 voltage 적용을 강제하면 수동 조정 입력이 무시된다.
+            # 사용자의 승인 여부는 별도 상태로 확인한다.
             "approval_confirmed": False,
         }
         self.log(f"Agent 초기화: {tower}, E={beam_energy}GeV, Events={target_events}, Target ADC={target_adc}")
@@ -260,79 +258,28 @@ After user says "완료":
         lines.append(f"Iterations: {self.state.get('iterations', 0)}")
         return "\n".join(lines)
 
-    def build_full_context(self, current_input: Optional[str] = None) -> str:
-        if current_input is None and self.conversation_history:
-            if self.conversation_history[-1]["role"] == "user":
-                current_input = self.conversation_history[-1]["content"]
-                temp_history = self.conversation_history[:-1]
-            else:
-                temp_history = self.conversation_history
-        else:
-            temp_history = self.conversation_history
-
-        parts = []
-        parts.append("=== Current State ===")
-        parts.append(self._build_state_context())
-        parts.append("")
-        parts.append("=== Recent Conversation ===")
-        history_lines = []
-        if not temp_history:
-            history_lines.append("(No conversation yet)")
-        else:
-            for msg in temp_history[-10:]:
-                role = "User" if msg["role"] == "user" else "Agent"
-                history_lines.append(f"{role}: {msg['content']}")
-        parts.append("\n".join(history_lines))
-        parts.append("")
-        if current_input:
-            parts.append("=== Current User Input ===")
-            parts.append(current_input)
-            parts.append("")
-        parts.append("=== Your Task ===")
-        parts.append(self._get_step_hint())
-        parts.append("")
-        parts.append("Output JSON with tool name and parameters.")
-        return "\n".join(parts)
-
     def _execute_tool(self, tool_name: str, params: Dict) -> str:
         try:
             if tool_name == "none":
                 return "no_tool_executed"
 
             elif tool_name == "motor_x_move_tool":
-                x = self._motor_x_for_current_step()
-                self.io.send_tool_output(f"[Motor] X축 이동 시작 ({self.tower}): {x:.3f} mm")
-                def _do_move():
-                    ok, msg = motor.move_x(x)
-                    if not ok:
-                        raise RuntimeError(msg)
-                    return msg
-                result = self._run_tool_with_retry(_do_move, "motor_x_move_tool")
-                self.io.send_tool_output(f"[Motor] {result}")
+                result = self._run_motor_x_move(self.tower)
                 self.state["x_moved"] = True
                 return result
 
             elif tool_name == "daq_run_tool":
-                self._apply_daq_params_from_state(
+                result, run_number = self._run_daq_from_state(
                     params,
                     events=self.state.get("target_events"),
                     beam_energy=self.state.get("beam_energy"),
                     program="HV Equalization",
                     pos=self._position_for_current_step(),
                 )
-                # DAQ 실행. daq_tool 내부의 dqm_session.start()이 monit --LIVE를 띄워
-                # DAQ 동안 우측 하단 DQM 패널이 실시간 갱신된다 — 여기가 유일한 플롯 경로.
-                result = self._run_tool_with_retry(
-                    lambda: self.daq_tool.execute(params, line_callback=self.io.send_tool_output),
-                    "daq_run_tool",
-                )
-                run_number = self._extract_run_number(result)
                 if run_number:
-                    self.state["last_run_number"] = run_number
                     self.state["iterations"] = self.state.get("iterations", 0) + 1
                     self.log(f"DAQ Run {run_number} 완료: {self.tower}, {params.get('events', 0)} events")
-                self.state["needs_suggest"] = False       # suggest는 plot confirm 후
-                self.state["needs_plot_confirm"] = True   # DAQ 후 먼저 plot 확인
+                self.state["needs_suggest"] = False       # 플롯 확인 후 제안을 계산한다.
                 return result
 
             elif tool_name == "hv_execute_tool":
@@ -367,7 +314,7 @@ After user says "완료":
                     self.state["last_suggested_hv_s"] = None
                     self.state["last_adc_c"] = None
                     self.state["last_adc_s"] = None
-                    self.state["approval_confirmed"] = False  # 다음 승인 라운드용 리셋
+                    self.state["approval_confirmed"] = False  # 다음 승인을 기다린다.
 
                     self.io.send_tool_output(f"🔍 HV 적용 확인 중 ({self.tower})...")
                     try:
@@ -388,7 +335,7 @@ After user says "완료":
 
             elif tool_name == "hv_equalization_suggest":
                 result_dict = self._run_tool_with_retry(self._do_suggest, "hv_equalization_suggest")
-                self.state["needs_suggest"] = False  # suggest 완료
+                self.state["needs_suggest"] = False  # 제안 계산 완료.
                 self._emit_suggest_summary()
                 self._emit_fitting_history()
                 return json.dumps(result_dict, ensure_ascii=False) if isinstance(result_dict, dict) else str(result_dict)
@@ -423,7 +370,7 @@ After user says "완료":
             self.log(f"Tool 실행 오류 ({tool_name}): {str(e)}")
             return f"Error: {str(e)}"
 
-    # ===== Suggest 처리 (ADC 측정만 sim이 오버라이드) =====
+    # HV 제안 처리. 시뮬레이션은 ADC 측정만 재정의한다.
 
     def _measure_adc(self, hv_c: float, hv_s: float, run_number: int) -> Tuple[Optional[float], Optional[float]]:
         """실제 run 데이터에서 (adc_c, adc_s) peakADC 측정.
@@ -494,7 +441,7 @@ After user says "완료":
             self.log(f"fitting summary 실패: {e}")
 
     def _extract_voltages(self, status_output: str) -> Tuple[Optional[float], Optional[float]]:
-        # 채널명은 타워별 (T1C/T1S … T9C/T9S). status 출력의 "(<name>) ... V0Set = <v>" 형식에서 추출.
+        # 상태 출력에서 현재 타워의 C/S 채널 전압을 추출한다.
         t = re.escape(self.tower)
         match_c = re.search(rf"\({t}C\).*?V0Set\s*=\s*([\d.]+)", status_output, re.I)
         match_s = re.search(rf"\({t}S\).*?V0Set\s*=\s*([\d.]+)", status_output, re.I)
@@ -503,11 +450,7 @@ After user says "완료":
             float(match_s.group(1)) if match_s else None,
         )
 
-    # Fields the LLM must not overwrite.
-    # - Config values set at init: beam_energy, target_events, target_adc_*
-    # - Hardware-read values (set by _execute_tool): last_adc_*, last_suggested_hv_*,
-    #   channel_done_*, last_hv_*, last_run_number
-    # - Code-managed counters: iterations, done
+    # 코드와 장비에서만 관리하는 상태 필드.
     _PROTECTED_FIELDS = frozenset({
         "beam_energy", "target_events", "target_adc_c", "target_adc_s",
         "current_tower",
@@ -517,8 +460,8 @@ After user says "완료":
         "last_run_number",
         "iterations", "done",
         "needs_suggest",
-        "x_moved", "y_confirmed",  # 위치 확인은 코드 소유 (_on_user_input)
-        "approval_confirmed",  # 승인 확인은 코드 소유 (_on_user_input)
+        "x_moved", "y_confirmed",  # 위치 확인 상태.
+        "approval_confirmed",  # HV 승인 상태.
     })
 
     def _update_state(self, updates: Dict[str, Any]):
@@ -529,17 +472,16 @@ After user says "완료":
                 self.state[key] = value
                 self.log(f"State updated: {key} = {value}")
 
-    # ===== 공용 드라이버 hooks (run()은 BaseAgent에서 제공) =====
+    # BaseAgent 실행 루프용 훅.
 
     def _print_banner(self):
         print(f"\n{'='*60}\n⚡ HV Equalization — {self.tower}\n{'='*60}")
 
     def _is_complete(self) -> bool:
-        # 단일 타워 — done_channel 실행 시 state['done']=True (runner가 타워를 순회)
+        # 단일 타워의 완료 상태를 반환한다.
         return bool(self.state.get("done"))
 
-    # 순수 확인 응답에 나타나는 단어들. 수동 HV 조정 입력은 항상 숫자를 포함하므로
-    # (예: "C 850 S 850", "C 300 올리고 S는 850으로") 숫자가 있으면 확인이 아니다.
+    # 숫자가 없는 완료 표현만 승인 응답으로 처리한다.
     _CONFIRM_WORDS = (
         "완료", "네", "예", "확인", "적용", "응", "그래", "좋아", "진행",
         "ok", "okay", "yes", "y", "apply", "confirm",
@@ -550,28 +492,24 @@ After user says "완료":
         if not t:
             return False
         if any(ch.isdigit() for ch in t):
-            return False  # 숫자 포함 → 수동 조정 요청
+            return False  # 숫자가 있으면 수동 조정 요청이다.
         return any(w in t for w in self._CONFIRM_WORDS)
 
     def _on_user_input(self, user_input: str):
-        # Y축 이동 확인
+        # Y축 이동 확인을 기록한다.
         if (self.state.get("x_moved")
                 and not self.state.get("y_confirmed")
                 and self.state.get("last_hv_c") is None):
             self.state["y_confirmed"] = True
             self.log("Y-axis confirmed by user")
             return
-        # DAQ 후 plot 확인 → suggest 단계로 전환
+        # 플롯 확인 후 HV 제안 단계로 전환한다.
         if self.state.get("needs_plot_confirm"):
             self.state["needs_plot_confirm"] = False
             self.state["needs_suggest"] = True
             self.log("Plot confirmed → proceed to hv_equalization_suggest")
             return
-        # 승인 단계(제안 존재 + ADC 측정됨): 사용자가 '완료'로 승인했는지,
-        # 아니면 수동 HV 조정을 요청했는지 판정한다.
-        # - 확인(완료 등) → approval_confirmed=True → step 1f(voltage 적용)
-        # - 수동 조정(숫자 포함) → approval_confirmed=False → step 1e 재진입해
-        #   LLM이 last_suggested_hv_c/s를 갱신하고 승인 메시지를 재전송하게 둔다.
+        # 제안 승인과 수동 HV 조정 요청을 구분한다.
         if (self.state.get("last_suggested_hv_c") is not None
                 and self.state.get("last_adc_c") is not None):
             if self._is_confirmation(user_input):
@@ -583,13 +521,13 @@ After user says "완료":
             return
 
     def _guard_tool(self, tool_name: str, decision: Dict[str, Any]) -> Optional[str]:
-        # plot confirm 필요 시 DAQ/suggest/hv 차단 (motor/status는 허용)
+        # 플롯 확인 전에는 DAQ, 제안, HV 변경을 막는다.
         if self.state.get("needs_plot_confirm") and tool_name not in ("motor_x_move_tool",):
             return (
                 f"needs_plot_confirm=True — send plot confirmation message first: "
                 f'{{"message": "{MSG_PLOT_CONFIRM}"}}'
             )
-        # done_channel은 두 채널 모두 수렴한 경우에만 허용
+        # 두 채널이 모두 수렴해야 완료 처리한다.
         if tool_name == "hv_equalization_done_channel":
             done_c = self.state.get("channel_done_c", False)
             done_s = self.state.get("channel_done_s", False)
@@ -598,10 +536,7 @@ After user says "완료":
                         f"승인 메시지(step 1e)를 먼저 출력하세요.")
         return None
 
-    def _guard_ai_message(self, message: str) -> Optional[str]:
-        if MSG_PLOT_CONFIRM in message and not self.state.get("needs_plot_confirm"):
-            return f"needs_plot_confirm=False — DO NOT send plot confirmation before DAQ runs. {self._get_step_hint()}"
-        return None
+    # 플롯 확인은 BaseAgent에서 검사한다.
 
     def _build_approval_message(self) -> Optional[str]:
         """승인 메시지(step 1e)를 state로부터 결정론적으로 생성한다.
@@ -619,7 +554,7 @@ After user says "완료":
         dc = self.state.get("channel_done_c", False)
         ds = self.state.get("channel_done_s", False)
         if dc and ds:
-            return None  # 둘 다 완료 → 승인 메시지 없음 (done_channel로)
+            return None  # 두 채널이 완료되면 승인 메시지가 필요 없다.
         oc = self.state.get("last_hv_c")
         os_ = self.state.get("last_hv_s")
         target = self.state.get("target_adc_c")
@@ -627,15 +562,15 @@ After user says "완료":
         s_part = f"{t}S 완료(변경 없음)" if ds else f"{t}S {os_:.0f}V→{ns}V"
         if not dc and not ds:
             adc_part = f"{t}C={adc_c:.1f}, {t}S={adc_s:.1f}"
-        elif dc:  # C 완료, S만 조정
+        elif dc:  # S 채널만 조정한다.
             adc_part = f"{t}S={adc_s:.1f}"
-        else:     # S 완료, C만 조정
+        else:     # C 채널만 조정한다.
             adc_part = f"{t}C={adc_c:.1f}"
         return (f"분석 결과, 현재 ADC: {adc_part} (목표: {target}). "
                 f"HV 변경 제안: {c_part}, {s_part}. 적용하시겠습니까?")
 
     def _finalize_ai_message(self, message: str) -> str:
-        # 승인 메시지는 LLM 텍스트를 신뢰하지 않고 state 기준으로 재구성한다.
+        # 승인 메시지는 현재 상태값으로 구성한다.
         if "적용하시겠습니까" in message:
             canonical = self._build_approval_message()
             if canonical and canonical != message:

@@ -25,7 +25,6 @@ public:
 
   int GetEventNum() { return fEvent; }
 
-  // TBmid<T> Mid(unsigned idx) const { return mids_.at(idx); }
   TBmid<T> Mid(unsigned idx) const;
   int Size() const { return static_cast<int>(fMapMids.size()); }
 
@@ -34,7 +33,6 @@ public:
 private:
   int fEvent;
   std::map<int, TBmid<T>> fMapMids;
-  // std::vector<TBmid<T>> mids_;
 };
 
 #endif
